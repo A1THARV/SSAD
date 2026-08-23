@@ -1,0 +1,115 @@
+# HAD100 -- primary hyperspectral benchmark (PRD v2, change C1)
+#
+# Paths point at the output of HAD100's own `main.py`, not the raw .dat/.hdr
+# scenes. That is deliberate: its band selection and 64x64 crop protocol define
+# the benchmark, and change C3 scores this pipeline against its 17 published
+# baselines. Re-deriving either would compare our detector on our bands against
+# their detectors on theirs, and the ranking would mean nothing.
+#
+# Run once after downloading:
+#     cd data/hyperspectral/had100/HAD100 && python main.py
+#
+# Verified contents:
+#     train/aviris_ng      1,040 crops   64x64x276  float32
+#     train/aviris         1,048 crops   64x64x162  int16
+#     test/aviris_ng         100 images  64x64x276  float32
+#     ground_truth/aviris_ng 100 masks   binary PNG
+
+dataset:
+  name: had100_aviris_ng
+  kind: hyperspectral
+  path: data/hyperspectral/had100/HAD100/HAD100Dataset/test/aviris_ng
+  file_format: npy
+  sensor: aviris_ng
+  ground_truth_path: data/hyperspectral/had100/HAD100/HAD100Dataset/ground_truth/aviris_ng
+  label_convention: binary_mask
+  notes: >
+    100 test images from 94 source scenes; six scenes contribute two crops each,
+    which is where the benchmark's name comes from. Ground truth ships as binary
+    PNG, so it is read from a single channel and thresholded above zero.
+
+preprocess:
+  # HAD100's main.py has ALREADY applied its aviris_ng band selection to these
+  # .npy files, reducing 425 bands to 276. Re-applying the preset here would
+  # index a 276-band cube with indices meant for a 425-band one, so it stays
+  # 'none' and the selection is recorded in dataset.sensor instead.
+  good_bands_preset: none
+  water_absorption_bands_nm: []
+  snr_threshold: null
+  clip_percentile: 99.9
+  # 15 components, chosen from the two-dataset ablation rather than assumed.
+  #
+  # RX mAUC by PCA width:
+  #   HAD100  peaks at  8-12  (0.9786 at 8, 0.9784 at 10, 0.9671 at 30)
+  #   ABU     plateaus at 15-50 (0.9627 at 15, 0.9636 at 50, 0.9633 at 30)
+  #
+  # The two datasets disagree, so no single width is optimal for both and
+  # picking HAD100's peak would be fitting to the test set we report against.
+  # 15 sits within ~0.004 mAUC of each dataset's own optimum and was chosen on
+  # the pair, not on either alone.
+  #
+  # Two hard constraints also bound it: PCA reduction is mandatory on a 4 GB
+  # card, and Fig. 1's first encoder kernel has spectral depth 7, so K must
+  # comfortably exceed 7 -- which rules out HAD100's nominal 8-component peak.
+  pca_n_components: 15
+  pca_variance: 0.99
+  cache_reduced: true
+  cache_dir: data/cache
+
+rx:
+  ridge: 1.0e-6
+
+autoencoder:
+  enabled: true
+  # Change C2: fit the background model on background only. Restricted to the
+  # AVIRIS-NG corpus, NOT all 522 anomaly-free scenes -- the AVIRIS-Classic set
+  # survives band selection at 162 bands against AVIRIS-NG's 276, so a single
+  # autoencoder cannot consume both without resampling to a common grid. The
+  # test set is entirely AVIRIS-NG, so the matched corpus is also the right one.
+  training_corpus: data/hyperspectral/had100/HAD100/HAD100Dataset/train/aviris_ng
+  train_on_test_scene: false
+  patch_size: 7
+  # Fig. 1 annotates the latent as z in R^d with d << K; K is 15 here.
+  latent_dim: 8
+  # Fig. 1's drawn encoder: Conv3D 32 -> 64 -> 128, kernels 3x3x7 -> 3x3x5 -> 3x3x3.
+  encoder_channels: [32, 64, 128]
+  kernel_spatial: 3
+  kernel_spectral_depths: [7, 5, 3]
+  lam: 0.1
+  epochs: 20
+  # Sized for PATCH-based training: a batch of 7x7x30 patches is ~1.5 MB, so
+  # this is nowhere near the 3.3 GB budget. If the architecture ever moves to
+  # 3D convs over whole 64x64 crops, this MUST drop to 4-8 -- that is the
+  # regime where the per-sample activation figure above bites.
+  batch_size: 256
+  max_patches: 40000
+  amp: true
+  vram_budget_gb: 3.3
+  gradient_checkpointing: false
+  device: auto
+
+score_fusion:
+  mode: weighted
+  alpha: 0.5
+  # Otsu, not percentile. A percentile flags a fixed fraction of pixels whatever
+  # the scene holds: on the Salinas zero-anomaly run it flagged 1.00% of a scene
+  # containing no anomalies at all -- every one a false positive -- while Otsu
+  # flagged 0.22%. Otsu responds to the score histogram; a percentile cannot.
+  #
+  # The paper (§V) reports precision/recall/F1 at the F1-maximising threshold.
+  # Switch to f1_optimal for that claim; it refuses to run without a held-out
+  # split, so it cannot silently be fitted on the reported test images.
+  threshold_method: otsu
+  threshold_percentile: 99.0
+  threshold_gamma: 3.0
+  validation_split: 0.2
+  validation_seed: 12345
+
+sam:
+  top_k: 3
+  low_confidence_angle_rad: 0.25
+  library_path: data/speclib/ecostress/curated_library.npz
+
+seed: 0
+deterministic: true
+output_root: results

@@ -1,0 +1,20 @@
+# Decision-level fusion -- FR-9.10
+#
+# `independent` is the default because it is the honest one given PRD §7.3's
+# data reality: the hyperspectral scenes and the thermal dataset come from
+# different sensors and different flights, so they are not pixel-co-registered
+# and never will be. Independent mode reports both branches side by side in one
+# document, explicitly labelled *not spatially fused*.
+#
+# Switch to `coregistered` only with genuinely aligned imagery. With
+# `require_registration_proof: true` the module raises UnregisteredInputError
+# rather than fabricating pixel alignment (§11 edge case 12).
+
+mode: independent
+require_registration_proof: true
+
+weight_hyperspectral: 0.5
+weight_thermal: 0.5
+
+seed: 0
+output_root: results

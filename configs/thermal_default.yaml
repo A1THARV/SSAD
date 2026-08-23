@@ -1,0 +1,56 @@
+# Thermal branch -- high-voltage electrical equipment (scidb.cn), PRD §7.3
+#
+# Hotspot = fault, which is the closest real-world analogue available to the
+# paper's "thermal anomaly = material of interest" framing.
+#
+# `assume_radiometric: false` is the important default. PRD §11 edge case 9
+# requires the Planck/emissivity module to refuse quantitative retrieval on
+# 8-bit visualization-only imagery rather than fabricate a temperature. Set
+# this to true ONLY for files whose radiometry is documented, and record the
+# gain/offset below when you do.
+
+dataset:
+  name: electrical_equipment
+  kind: thermal
+  path: data/thermal/electrical_equipment
+  ground_truth_path: data/thermal/electrical_equipment/labels.csv
+  label_convention: binary_mask
+  notes: >
+    Circuit breakers, transformers and surge arresters. Primary thermal source
+    per the locked §15 decision. If the scidb.cn download requires manual
+    registration, drop the archive at the path above and re-run
+    scripts/download_data.py to verify it.
+
+preprocess:
+  gain: 1.0
+  offset: 0.0
+  assume_radiometric: false
+  register_frames: true
+
+cnn_lstm:
+  enabled: true
+  conv_channels: [16, 32, 64]
+  hidden_size: 64
+  # Below this many frames the model degrades to CNN-only single-frame scoring
+  # and logs that it did so (§11 edge case 8).
+  min_seq_len: 3
+  temporal_model: lstm
+  interpolate_dropped_frames: true
+  epochs: 15
+  batch_size: 16
+  device: auto
+
+planck:
+  wavelength_um: 10.0
+  default_emissivity: 0.95
+  # An unlisted material gets this range, not a false-precision point estimate
+  # (§11 edge case 11).
+  default_emissivity_range: [0.85, 0.98]
+
+score_threshold:
+  threshold_method: percentile
+  threshold_percentile: 99.0
+
+seed: 0
+deterministic: true
+output_root: results

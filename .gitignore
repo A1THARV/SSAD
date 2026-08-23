@@ -1,0 +1,44 @@
+# Datasets and generated artifacts — never committed (PRD §6)
+data/
+results/
+
+# RESULTS.md IS committed, so the paper's numbers stay diffable across runs.
+#
+# It is written by hand, not generated. The original plan was to generate it
+# from evaluation/report.py, and that was the wrong shape: the document's value
+# is in what the numbers *mean* -- which ablation overturned which assumption,
+# which caveat attaches to which figure -- and none of that comes out of a
+# metrics table. report.py still renders the tables that go into it.
+#
+# The rule that replaces "never hand-edit": every figure in RESULTS.md must be
+# traceable to a run directory or a named script. Its Provenance section lists
+# them, and results/*/config_hash.txt pins the config each was produced under.
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.coverage
+htmlcov/
+coverage.xml
+
+# Environments
+.venv/
+venv/
+env/
+
+# Notebooks
+.ipynb_checkpoints/
+
+# Editors / OS
+.vscode/
+.idea/
+Thumbs.db
+Desktop.ini
+
+# Claude Code machine-local settings (session temp paths, per-machine allowlists).
+# settings.json is shared; settings.local.json is not.
+.claude/settings.local.json

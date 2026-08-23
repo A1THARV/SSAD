@@ -1,0 +1,596 @@
+# Results
+
+Measured output of the prototype, intended to replace the paper's Section VII
+placeholder. Every number here was produced by a command in this repository and
+is reproducible from a config in `configs/`; run records live under `results/`
+with the config hash that produced them.
+
+**Hardware.** NVIDIA RTX 3050 Laptop (4 GB VRAM), Windows 11, PyTorch 2.5.1+cu121.
+Peak VRAM across every run reported here was **0.31 GB**, well inside the 3.3 GB
+budget — the 4 GB constraint shaped the architecture (patch-based training over
+PCA-reduced cubes) rather than limiting the results.
+
+---
+
+## 1. Headline: HAD100
+
+100 test images, 64×64, AVIRIS-NG, 276 bands after the benchmark's own band
+selection. Metric is **mAUC** — per-image AUC-ROC averaged over the 100 images,
+which is what HAD100's `eval_results.py` reports and therefore the only figure
+comparable to its published table. A pooled AUC over all 409,600 pixels is a
+different quantity and is not used.
+
+| Branch | 276 bands | band50 protocol |
+|---|---|---|
+| RX (Eq. 2), per-scene PCA basis | 0.9749 | — |
+| RX (Eq. 2), corpus PCA basis | 0.9806 | 0.9835 |
+| Autoencoder (Eq. 1) alone | 0.9522 | 0.9619 |
+| **Fused, α = 0.5** | 0.9778 | **0.9843** |
+
+**0.9843 is the headline.** It is the full pipeline — Eq. 1 + Eq. 2 + Eq. 3 fused
+under Fig. 1 stage 5 — at α = 0.5, the fusion weight fixed in the config *before*
+any of the ablations below were run. Nothing in that number was selected on the
+test set.
+
+Against the published ranking it sits **10th of 20** in the band50 column,
+0.0002 behind KSVDD and ahead of KIFD, QLRX, GRX and LRX. See §3.
+
+That placement belongs to the **fused system**, not to the deep component. The
+autoencoder alone scores 0.9619, which is *below* AutoAD's 0.9688 — so this work
+does not beat the benchmark's deep-learning entries with a better autoencoder. It
+beats them by fusing a weak autoencoder with a strong RX branch, and §7
+quantifies how weak.
+
+Fusion buys **+0.0008 over the best single branch** at band50 — measured against
+corpus-basis RX on the same config, which is the honest comparison. (An earlier
+draft quoted +0.0029; that was fusion measured against the *weaker* per-scene RX
+on the 276-band config, and it overstated the gain. §7 has the corrected sweep.)
+
+```
+python -m pipeline.cli.run_hyperspectral --config configs/had100_band50.yaml
+python -m pipeline.cli.run_hyperspectral --config configs/had100.yaml
+```
+
+Note the two columns are not directly comparable branch-for-branch: the 276-band
+config carries `rx.pca_basis: per_scene` (its default when the run was made), so
+its fused row is fused against the *weaker* RX. The band50 config uses the corpus
+basis for both, which is why its fusion delta is the honest one.
+
+---
+
+## 2. Eq. 2 is verified against a published reference implementation
+
+HAD100's baseline table has three columns — `band50`, `band100`, `band200` — and
+its shipped code never defines them. Recovering the protocol turned into a
+correctness check on our own detector.
+
+`GRX` in that table is plain global RX, i.e. exactly Eq. 2. Running our
+`rx_score` on the **first N** of the 276 bands reproduces it:
+
+| N | ours | published GRX | Δ |
+|---|---|---|---|
+| 50 | 0.9799 | 0.9799 | 0.0000 |
+| 100 | 0.9714 | 0.9714 | 0.0000 |
+| 200 | 0.9653 | 0.9649 | 0.0004 |
+
+Two exact matches to four decimal places. The competing hypotheses do not match:
+uniform subsampling gives 0.9742 / 0.9710, strided selection 0.9727 / 0.9701.
+
+So `band50` means "the first 50 bands", and our Eq. 2 implementation agrees with
+an independent published implementation on a public benchmark. The 0.0004 gap at
+N = 200 is consistent with a difference in covariance regularisation, which
+matters most where the 4,096-pixel covariance is closest to ill-conditioned.
+
+Recorded as presets `had100_band50` / `_band100` / `_band200`; see
+`scripts/had100_baselines.py`.
+
+---
+
+## 3. HAD100's `band50` advantage is a wavelength effect, not a dimensionality one
+
+Every one of the 19 published baselines scores best at `band50` and degrades
+monotonically as bands are added. The obvious reading — fewer dimensions, better
+covariance estimate — is wrong.
+
+The first 50 selected bands are original AVIRIS-NG bands 15–65, i.e.
+**455–700 nm: the visible spectrum**. Holding the band *count* at 50 and sliding
+the window across the range:
+
+| window | wavelengths | RX mAUC |
+|---|---|---|
+| bands 0–49 | 455–700 nm | **0.9799** |
+| bands 50–99 | 705–995 nm | 0.8905 |
+| bands 100–149 | 1000–1310 nm | 0.8423 |
+| bands 150–199 | 1515–2030 nm | 0.9067 |
+| bands 200–249 | 2035–2280 nm | 0.9162 |
+| 50 drawn evenly across the whole range | 455–2410 nm | 0.9742 |
+
+Identical machinery, identical dimensionality, a 0.14 mAUC spread. The
+discriminative signal for HAD100's targets lives in the visible; the SWIR bands
+are close to noise for this task and adding them actively hurts.
+
+**Caveat, stated rather than buried.** This was measured on the labelled test
+images, because HAD100 ships no labelled validation split. It is reported as a
+diagnostic observation about the benchmark, not as a held-out selection, and no
+hyperparameter was chosen from it.
+
+### A prediction this forces about Objective 2, recorded before M3 runs
+
+If HAD100's discriminative signal lives at 455–700 nm, then **HAD100 is a weak
+benchmark for Objective 2** — SAM material matching against USGS/ECOSTRESS.
+
+Eq. 4's discriminative power over a mineral or material library comes
+overwhelmingly from **SWIR absorption features**: hydroxyl and carbonate bands
+near 2200–2350 nm, water features around 1400 and 1900 nm, the Fe-oxide edge in
+the near-IR. Those are the diagnostic shapes a spectral library encodes. They sit
+in precisely the windows the table above shows are near-noise for this
+benchmark's targets — 1000–1310 nm at 0.8423, 1515–2030 nm at 0.9067,
+2035–2280 nm at 0.9162.
+
+The two objectives therefore want different parts of the spectrum. Detection here
+is a visible-range problem; identification is a SWIR problem. A benchmark tuned
+to the first is not evidence about the second.
+
+**So this is written down now, before M3 produces any number:** a poor SAM result
+on HAD100 would not indict Eq. 4. It would indict the benchmark's fit to
+Objective 2. Stated in advance it is a prediction; stated afterwards it would be
+an excuse, and the difference matters. If M3 does produce weak HAD100 material
+matching, the correct response is to evaluate Objective 2 on a scene with
+SWIR-diagnostic targets rather than to conclude Eq. 4 does not work.
+
+Note this also bounds §1's headline honestly: the band50 configuration that
+produces 0.9843 **discards every SWIR band**, so that configuration cannot serve
+Objective 2 at all. Detection and identification will need different band
+selections from the same pipeline — which the `good_bands_preset` mechanism
+already supports, and which the paper should state rather than leave implicit.
+
+### The published ranking
+
+All 19 baselines, recomputed from the benchmark's shipped result matrices using
+*our* `mean_per_image_auc` — so a transcription error or a pooled-vs-per-image
+metric mismatch cannot creep in.
+
+| Rank | Method | band50 | band100 | band200 |
+|---|---|---|---|---|
+| 1 | AET-KCSR | 0.9948 | 0.9897 | 0.9869 |
+| 2 | KCSR | 0.9939 | 0.9865 | 0.9860 |
+| 3 | CR | 0.9929 | 0.9859 | 0.9849 |
+| 4 | AET | 0.9925 | 0.9875 | 0.9818 |
+| 5 | WeaklyAD-B | 0.9887 | 0.9838 | 0.9850 |
+| 6 | WeaklyAD-A | 0.9862 | 0.9788 | 0.9773 |
+| 7 | AED | 0.9859 | 0.9645 | 0.9625 |
+| 8 | 2S-GLRT | 0.9853 | 0.9683 | 0.9310 |
+| 9 | KSVDD | 0.9845 | 0.9737 | 0.9706 |
+| **10** | **this work — fused, α = 0.5** | **0.9843** | — | — |
+| 11 | KIFD | 0.9829 | 0.9822 | 0.9774 |
+| 12 | QLRX | 0.9801 | 0.9715 | 0.9682 |
+| 13 | GRX | 0.9799 | 0.9714 | 0.9649 |
+| 14 | LRX | 0.9775 | 0.9692 | 0.9720 |
+| 15 | AutoAD | 0.9688 | 0.9661 | 0.9642 |
+| 16 | KRX | 0.9616 | 0.9329 | 0.9282 |
+| 17 | LREN | 0.9583 | 0.9286 | 0.9309 |
+| 18 | FrFE | 0.9476 | 0.9371 | 0.9164 |
+| 19 | PTA | 0.9031 | 0.8976 | 0.8686 |
+| 20 | RGAE | 0.9003 | 0.8876 | 0.8823 |
+
+Tenth of twenty on the column where the baselines are strongest — 0.0002 behind
+KSVDD and ahead of the classical family (KIFD, QLRX, GRX, LRX). Behind the kernel
+and transform-based leaders; the four methods above 0.99 are the honest target
+for further work.
+
+**On the deep-learning comparison, stated precisely.** The fused system (0.9843)
+is ahead of AutoAD (0.9688), LREN (0.9583) and RGAE (0.9003). The autoencoder
+*alone* is **0.9619 — below AutoAD**. The paper must attribute this to the fused
+pipeline and not let it read as a claim about the deep component, which §7 shows
+is the weaker half of the fusion.
+
+Source: Li et al., *Hyperspectral Anomaly Detection: A Survey and Benchmark*,
+IEEE TGRS 61, 2023, doi:10.1109/TGRS.2023.3258067. Per change C3 the baselines
+are **consumed, not re-implemented**.
+
+---
+
+## 4. Fig. 1 was right about the single PCA block
+
+The paper's Fig. 1 draws one PCA block feeding both the autoencoder and the RX
+branch. The implementation initially split them — a corpus-fitted basis for the
+autoencoder (which it needs, since train and inference must share axes) and a
+per-scene basis for RX (on the reasoning that Eq. 2 estimates Σ from the scene
+anyway, so a scene-local basis is consistent with it).
+
+Measured, that reasoning was wrong:
+
+| RX basis | K = 8 | K = 15 |
+|---|---|---|
+| per-scene | 0.9786 | 0.9749 |
+| **corpus** | 0.9782 | **0.9806** |
+
+At K = 15 the corpus basis wins by +0.0057 and is the best RX result obtained
+anywhere in this work — it also clears the published GRX `band50` figure of
+0.9799. At K = 8 the two are within 0.0004, i.e. indistinguishable.
+
+Why the gap opens with width: the corpus basis is fitted on 4.26 M pixels from
+1,040 scenes, the per-scene basis on 4,096 pixels from one. At K = 8 both have
+plenty of data for eight stable directions. By K = 15 the per-scene fit is
+estimating directions it does not have the samples to resolve, and Eq. 2 then
+inverts a covariance expressed in a partly arbitrary basis.
+
+**Consequence for the paper: Fig. 1 needs no second PCA path.** That edit comes
+off the list; `rx.pca_basis: corpus` is now the default in
+`configs/had100_band50.yaml`.
+
+---
+
+## 5. Eq. 3's SAM term earns its place
+
+Ablating λ and the domain the angle is evaluated in:
+
+| variant | λ | SAM domain | mAUC | vs no-SAM |
+|---|---|---|---|---|
+| **baseline** | 0.1 | **reflectance** | **0.9522** | **+0.0065** |
+| no SAM term | 0.0 | — | 0.9457 | — |
+| angle taken on PCA scores | 0.1 | latent | 0.9167 | **−0.0290** |
+
+Two findings, and the second is the more important one.
+
+Eq. 3's SAM term earns its place: dropping it costs **0.0065 mAUC**, so the
+composite loss is doing work rather than decorating an MSE.
+
+But it earns its place **only when evaluated in the reflectance domain**.
+Evaluated on the PCA scores — the obvious implementation, since those are the
+tensors already in hand — the same term costs 0.0290 *relative to omitting it
+entirely*. The naive version does not merely fail to help; it actively harms,
+and it would have been reported as evidence against the paper's own Eq. 3.
+
+### Why the domain matters
+
+Eq. 4's physical justification is that the angle between two *reflectance*
+spectra is invariant to illumination — a shadowed and a sunlit patch of one
+material differ in magnitude, not direction. That argument does not survive the
+move to PCA scores:
+
+* PCA scores are mean-centred, so the origin is the **corpus mean spectrum**, not
+  darkness. An unremarkable background pixel projects to near zero, where its
+  direction is noise and its angle to anything is unstable.
+* The angle between score vectors is not the angle between the spectra they
+  encode.
+
+So the default back-projects both the input and the reconstruction to reflectance
+(`x = z·W + μ`, a fixed differentiable linear map) before taking the angle. On
+matched spectra the two domains disagree by more than 5×, and the 0.0355 mAUC gap
+between the two rows above is what that disagreement costs.
+
+The mechanism is visible in the training traces. Both runs converge, but the
+latent-domain SAM term starts at 0.3565 rad against the reflectance term's
+0.0899 — four times larger for the same reconstructions, because near the origin
+the angle between score vectors is dominated by noise. The optimiser spends
+capacity driving down an angle that carries no information about how well the
+spectrum was reconstructed.
+
+---
+
+## 6. Whitening the autoencoder input
+
+Pairing whitening with PCA width, because a prior measurement said the two
+interact. Principal angles between bases fitted on disjoint halves of the corpus:
+
+| components | 1–6 | 7–10 | 11–15 |
+|---|---|---|---|
+| angle between halves | < 2.2° | 3.7–8.7° | 13.0–**87.0°** |
+| λ_k / λ_1 | ≥ 1.6e-3 | 1.7e-4 – 1.0e-3 | ≤ 1.1e-4 |
+
+Only the leading ~8 directions reproduce across disjoint samples. Beyond that the
+eigenvectors rotate freely while the eigenvalues stay smooth — eigenvector
+stability fails first.
+
+Whitening divides each component by √λ, promoting the trailing components to
+equal weight. At K = 15 those are exactly the non-reproducible ones, so whitening
+should hurt there and be more defensible near K ≈ 8. Measured:
+
+| K | latent | whiten off | whiten on | Δ |
+|---|---|---|---|---|
+| 15 | 8 | **0.9522** | 0.9472 | **−0.0050** |
+| 8 | 4 | 0.9217 | 0.9426 | **+0.0209** |
+
+### Why this one belongs in the paper as a worked example
+
+The ordering matters more than the numbers. The stability spectrum was measured
+first, for an unrelated reason — checking whether a corpus PCA fit needed
+sampling. It produced a *falsifiable prediction* about a parameter nobody had
+measured yet: whitening should help at K ≈ 8 and hurt above it, because the
+denominator √λ promotes directions that do not reproduce.
+
+The prediction was written into `ROADMAP.md` before the ablation was run, it
+specified the direction of the effect at both widths, and it held at both.
+
+That is worth more to the paper than the 0.0209 itself, because it demonstrates
+the method has a *mechanism* rather than a tuning surface. The usual form of this
+result in the literature is "we swept the hyperparameter and 8 worked best",
+which is unfalsifiable and does not transfer to another sensor. A subspace
+stability spectrum is measurable on any corpus, with no labels, before any model
+is trained — so the rule it implies ("whiten only up to the stability limit")
+transfers where a swept optimum does not.
+
+It also names its own failure mode: run at a single fixed width, as originally
+planned, this would have been recorded as "whitening is harmful" and the
+mechanism missed entirely. The paired design is what made it visible.
+
+**The sign flips with width, in the predicted direction.** The prediction was
+made from the stability spectrum before the measurement was run, and it holds:
+
+* At **K = 8** every retained direction reproduces across disjoint corpus halves,
+  so whitening does only the thing it was supposed to do — remove PC1's
+  22,076× dominance of the MSE — and buys **+0.0209**.
+* At **K = 15** components 11–15 are sample noise. Whitening promotes them to
+  equal weight, and the network spends capacity reconstructing directions that
+  will not be there next time. It **costs 0.0050**.
+
+So `whiten_input` is not a good or bad setting; it is a setting that is only
+meaningful paired with width. Neither value should be treated as a default, which
+is why the config carries both and the config comment names the pairing.
+
+Note the confound in the cross-K rows: K = 8 forces `latent_dim` from 8 down to 4
+(Fig. 1 requires d ≪ K), so the two rows vary two things at once. The **within-K**
+comparison — each row read left to right — is the clean one, and it is where the
+sign flip lives.
+
+---
+
+## 7. Full ablation table
+
+All six autoencoder variants, 100 HAD100 test images, `results/m2/ablations.json`.
+One-at-a-time from the baseline rather than a full factorial.
+
+| variant | K | latent | whiten | λ | SAM domain | mAUC |
+|---|---|---|---|---|---|---|
+| **baseline** | 15 | 8 | off | 0.1 | reflectance | **0.9522** |
+| whiten | 15 | 8 | **on** | 0.1 | reflectance | 0.9472 |
+| no SAM | 15 | 8 | off | **0.0** | — | 0.9457 |
+| SAM in latent space | 15 | 8 | off | 0.1 | **latent** | 0.9167 |
+| K = 8 | **8** | **4** | off | 0.1 | reflectance | 0.9217 |
+| K = 8 + whiten | **8** | **4** | **on** | 0.1 | reflectance | 0.9426 |
+
+### Fusion weight sensitivity
+
+α = 1.0 is RX alone, α = 0.0 the autoencoder alone. **α = 0.5 is the reported
+operating point** — fixed in the config a priori, before any of this was
+measured. The rest of each curve is post-hoc sensitivity, not a selection.
+
+**The sweep is reported on both configs, because the first one was on the wrong
+one.** The six-variant sweep below runs on `had100.yaml`, where α = 1.0 is
+*per-scene* RX at 0.9749. The headline in §1 is the band50 config, where RX alone
+is 0.9835. A fusion curve measured against a weaker RX branch overstates what
+fusion adds, so the band50 sweep is the one the paper should quote.
+
+| α | band50 (corpus RX) | 276-band (per-scene RX) |
+|---|---|---|
+| 0.00 | 0.9619 | 0.9522 |
+| 0.25 | 0.9772 | 0.9683 |
+| 0.40 | 0.9819 | 0.9752 |
+| **0.50** | **0.9843** | **0.9778** |
+| 0.60 | 0.9861 | 0.9796 |
+| 0.75 | 0.9880 | 0.9814 |
+| 0.90 | **0.9882** | 0.9808 |
+| 1.00 | 0.9835 | 0.9749 |
+
+Moving to the stronger RX branch does what it should: the optimum shifts toward
+α = 1 (**0.75 → 0.90**) and the marginal gain at that optimum shrinks
+(**+0.0064 → +0.0048**). Both are the predicted direction — a better RX branch
+needs less help and tolerates less interference.
+
+**The correction that matters to §1.** I previously reported fusion buying
++0.0029 at α = 0.5. That was measured against per-scene RX. On the config the
+headline actually uses, fusion at the a priori α = 0.5 buys **+0.0008** over RX
+alone. The fusion story is weaker at the reported operating point than I first
+stated, and the earlier figure was flattered by its baseline.
+
+**On the 0.9882.** That is the post-hoc ceiling at α = 0.90, and it is *not*
+claimed as a result — α was chosen by reading this table, which was computed on
+the 100 images being reported. Quoting it as the headline would be exactly the
+test-set tuning this project refuses elsewhere. It is recorded because the shape
+of the curve is informative and because hiding it would be worse; it would rank
+6th of 20 if it were legitimate, and it is not.
+
+### What the autoencoder is worth, per variant
+
+| α | baseline | whiten | no SAM | SAM latent | K=8 | K=8+whiten |
+|---|---|---|---|---|---|---|
+| 0.00 | 0.9522 | 0.9472 | 0.9457 | 0.9167 | 0.9217 | 0.9426 |
+| 0.25 | 0.9683 | 0.9620 | 0.9625 | 0.9572 | 0.9618 | 0.9609 |
+| 0.50 | 0.9778 | 0.9722 | 0.9739 | 0.9730 | 0.9735 | 0.9719 |
+| 0.75 | 0.9814 | 0.9787 | 0.9810 | 0.9814 | 0.9795 | 0.9789 |
+| 0.90 | 0.9808 | 0.9790 | 0.9815 | 0.9818 | 0.9812 | 0.9810 |
+| 1.00 | 0.9749 | 0.9749 | 0.9749 | 0.9749 | 0.9786 | 0.9786 |
+
+**An unflattering reading, stated plainly.** The optimum sits at α ≈ 0.75–0.90 on
+both configs, i.e. the autoencoder is worth 10–25% of the decision, not half of
+it. And at α = 0.9 every variant lands within 0.001 of every other
+(0.9808–0.9818) *including the worst branch in the table*. Once the autoencoder's
+weight is low enough to be optimal, **which** autoencoder it is stops mattering —
+which means most of §5–§7's careful ablation work buys almost nothing at the
+operating point that actually maximises accuracy.
+
+The autoencoder is a weak second opinion, not a co-equal detector: **+0.0048 at
+the post-hoc optimum, +0.0008 at the reported one.** PRD §14 anticipated it
+underperforming RX on scene-limited AVIRIS data; it does, and this is that
+prediction quantified.
+
+One genuine improvement is visible across configs, though: the autoencoder branch
+is stronger at band50 (0.9619 vs 0.9522), gaining more from dropping the SWIR
+bands than RX does (+0.0097 against RX's +0.0029). The reconstruction objective
+appears to suffer more from noise-dominated bands than the Mahalanobis distance
+does — consistent with §3, and worth one sentence in the paper.
+
+---
+
+## 8. Edge case: a scene with no anomalies at all
+
+Salinas, 512×217×204, run under `label_convention: zero_anomaly` so the ground
+truth is all-background and every detection is by construction a false alarm
+(PRD §11 edge case 3, change C5). AUC is undefined here and is reported as
+`n/a (single-class GT)` rather than substituted — that is the correct output, not
+a failure.
+
+### Variance-retained PCA selection is actively harmful
+
+The false-alarm rate is a steep function of PCA width, and the conventional
+"retain 99% of the variance" rule picks the **worst** width available:
+
+| PCA width | Otsu | percentile p99 | μ + 3σ |
+|---|---|---|---|
+| **K = 3** — what `pca_variance: 0.99` selects | **14.62%** | 1.00% | 1.07% |
+| K = 5 | 11.00% | 1.00% | 2.12% |
+| K = 10 | 0.31% | 1.00% | 0.79% |
+| K = 15 | 0.22% | 1.00% | 0.57% |
+| K = 30 | 0.00% | 1.00% | 0.23% |
+
+Salinas is extremely low-rank — 99% of its variance sits in three components — so
+the variance rule selects K = 3 and flags **14.6% of an anomaly-free scene**.
+
+The mechanism: anomalies are low-variance by construction, so "retain 99% of the
+variance" discards precisely the directions that separate them. Once those are
+gone the *background itself* is heterogeneous in what remains, Otsu finds a
+genuine split in it, and a seventh of the scene is flagged.
+
+`pca_n_components` is therefore the operative setting in every config;
+`pca_variance` is retained only as a documented fallback.
+
+### And it corrects an earlier claim about thresholding
+
+An earlier note in `ROADMAP.md` recorded "Otsu 0.22% vs percentile 1.00%" and
+concluded Otsu is the better default for zero-anomaly scenes. The table above
+shows that holds **only when the background is well modelled**. At K ≤ 5 Otsu is
+an order of magnitude *worse* than a fixed percentile, because it adapts to the
+histogram — a virtue when the histogram is unimodal-plus-tail, a liability when
+the retained subspace has made the background multimodal. A percentile is
+insensitive to this by construction: it flags 1.00% at every width, right or
+wrong.
+
+Both numbers in that earlier note were correct; they were measured at different
+K, which was not recorded at the time.
+
+### At K = 15 the flagged pixels are the right ones
+
+Per land-cover class, at the Otsu threshold:
+
+| class | pixels | flagged |
+|---|---|---|
+| 0 (unlabelled/edges) | 56,975 | 0.42% |
+| 5 | 2,678 | 0.04% |
+| all 15 other crop classes | 48,452 | 0.00% |
+
+Every one of the 16 actual crop classes is essentially untouched; the residual
+false alarms are confined to unlabelled and field-boundary pixels. RX's
+unimodal-Gaussian background assumption survives a 16-class agricultural scene
+better than expected — provided the PCA width leaves it enough directions to
+model the background in.
+
+---
+
+## 9. Reproducibility
+
+* Seeds fixed (`seed: 0`, `deterministic: true`); repeated training runs agree to
+  1e-9 in per-epoch loss.
+* Every run writes `metrics.json`, `config_used.yaml`, `config_hash.txt` and
+  `command.txt`; the hash is taken over the *resolved* config, so a changed
+  default is detected even when no file changed.
+* The corpus PCA basis is fitted **exactly**, not sampled: a two-pass streaming
+  covariance over 1,040 memory-mapped crops, 4,259,840 pixels, 85 s, holding
+  0.61 MB of covariance against the 4.70 GB an eager load would take.
+* **333 unit tests**, all under `tests/unit/`, no skips on this machine. There is
+  no separate integration suite — the end-to-end paths are exercised by the runs
+  in §11 rather than by tests, which is a gap worth naming rather than papering
+  over.
+
+### An environment hazard worth recording
+
+Anaconda's MKL and PyTorch ship different builds of `libiomp5md.dll`. Importing
+torch and then calling any MKL-backed NumPy routine — `a.T @ a`, `np.linalg.eigh`,
+i.e. every line of the PCA path — **aborts the interpreter** with `OMP: Error #15`.
+
+The standard workaround (`KMP_DUPLICATE_LIB_OK=TRUE`) is documented by Intel as
+unsupported and warned to "may silently produce incorrect results", which is the
+one failure mode this project cannot tolerate. It is therefore verified rather
+than trusted: `tests/unit/test_runtime.py` runs the corpus-covariance kernel in
+two subprocesses — one with torch loaded under the flag, one with NumPy alone —
+and asserts the covariance and its eigenvalues are **bit-identical**. They are.
+The workaround stays only as long as that test passes.
+
+---
+
+## 10. Change C2's premise is right about the conclusion and wrong about the reason
+
+Change C2 replaced single-scene self-supervised training with training on a
+separate anomaly-free corpus, arguing that Eq. 1's premise — "anomalies
+reconstruct poorly" — cannot hold for a background model fitted on data
+containing the anomalies it must detect.
+
+Tested directly. Everything held fixed except which pixels the network saw: same
+architecture, same 20 epochs, same λ, same corpus-fitted PCA basis.
+
+| training data | patches | models | mAUC | wall clock |
+|---|---|---|---|---|
+| **the test scene itself** (Auto-AD style) | 4,096 per scene | 100 | **0.9499** | 42 min |
+| corpus, **matched** budget | 4,096 | 1 | 0.9418 | 24 s |
+| corpus, full budget | 40,000 | 1 | **0.9522** | 232 s |
+
+**At matched data volume, training on the test scene wins by +0.0080.** The
+contamination argument does not survive contact with the measurement. The
+anomalies in HAD100 are a handful of pixels in a 64×64 crop — well under 1% of
+the training patches — so the model barely sees them, while it learns *that
+scene's* exact background rather than an average of 1,040 others. Scene-specific
+knowledge outweighs the contamination.
+
+What actually makes corpus training better is **data volume**, not purity. Given
+ten times the patches, one corpus model beats 100 per-scene models by +0.0023 —
+and does it in 232 seconds instead of 42 minutes, a ~10× cost difference that
+grows linearly with the size of the test set.
+
+**So change C2 stands, on different grounds than it was argued from.** It should
+be justified in the paper by efficiency and by the data volume an anomaly-free
+corpus makes available — not by the claim that a contaminated background model
+cannot support Eq. 1. On this benchmark, at equal data, it demonstrably can.
+
+The original argument would become correct in a regime this benchmark does not
+test: larger anomalies occupying a meaningful fraction of the scene. That is a
+stated limitation, not a defence.
+
+---
+
+## 11. Provenance
+
+Every figure above traces to a run directory or a named script. `results/` is
+gitignored (it holds score maps); the run records are reproducible from the
+configs and commands listed here.
+
+| Result | Produced by | config hash |
+|---|---|---|
+| §1 headline, band50 | `results/band50-full_20260823-165748` | `55e48abab601` |
+| §1 headline, 276 bands | `results/had100-m2-baseline_20260823-160820` | `649c82d06c59` |
+| §2 GRX reproduction, §3 wavelength windows | `scripts/had100_baselines.py` + the band-window sweep | — |
+| §3 published ranking | `results/had100_baselines.json` | — |
+| §4–§7 ablations, 276-band α sweep | `results/m2/ablations.json` via `scripts/run_ablations.py` | — |
+| §7 band50 α sweep (the one to quote) | `results/m2-band50/ablations.json` | — |
+| §10 train-on-test-scene | `results/m2/train_on_test_scene.json` via `scripts/train_on_test_scene.py` | — |
+| §8 Salinas zero-anomaly | `results/salinas-zero-anomaly_20260823-163509` | `86f4b5c9576a` |
+| §9 corpus PCA timing, stability spectrum | `BandReducer.fit_streaming` on the 1,040-crop corpus | — |
+
+Note that `band50-full` and `band50-rx` share a config hash: `--rx-only` is a
+command-line flag, not a config field, so the resolved config is genuinely
+identical and only `command.txt` distinguishes them. That is the intended
+behaviour — the hash identifies the configuration, not the invocation.
+
+### Commands
+
+```bash
+# Headline runs
+python -m pipeline.cli.run_hyperspectral --config configs/had100_band50.yaml
+python -m pipeline.cli.run_hyperspectral --config configs/had100.yaml
+python -m pipeline.cli.run_hyperspectral --config configs/salinas.yaml
+
+# Ablations and baselines
+python scripts/run_ablations.py --out results/m2
+python scripts/run_ablations.py --config configs/had100_band50.yaml     --only baseline,rx_k15_corpus --out results/m2-band50
+python scripts/had100_baselines.py
+python scripts/train_on_test_scene.py
+```

@@ -1,0 +1,83 @@
+# Salinas (AVIRIS) -- §11 edge case 3 fixture (PRD v2, change C5)
+#
+# ROLE CHANGED. In PRD v1 this was a detection scene whose 16-class land-cover
+# map had to be bent into an anomaly mask under some stated convention. Change
+# C5 rejects that: "we designated some crops as anomalies" is not an answer that
+# survives review, and any AUC derived that way would be an artefact of the
+# labelling choice rather than a property of the detector.
+#
+# Salinas now serves as the zero-anomaly fixture. `label_convention:
+# zero_anomaly` builds an all-background ground truth, and the run measures the
+# false-positive rate at the chosen threshold on a scene where every detection
+# is by definition a false alarm. That is a test the edge-case suite needed
+# anyway, and this scene supplies it from real data instead of a fabricated one.
+#
+# Expect AUC-ROC to render as "n/a (single-class GT)" here -- that is correct,
+# not a failure. The false-positive rate is the number this run reports.
+#
+# Note that a percentile threshold flags a fixed fraction of pixels by
+# construction, so `otsu` is the more informative method for this scene: it can
+# actually decline to split a distribution with no anomaly mode.
+
+dataset:
+  name: salinas
+  kind: hyperspectral
+  path: data/hyperspectral/salinas/Salinas_corrected.mat
+  file_format: mat
+  sensor: aviris
+  data_key: salinas_corrected
+  # The class map is intentionally NOT read as ground truth. It is left here as
+  # provenance for anyone who wonders whether labels were available.
+  ground_truth_path: null
+  ground_truth_key: null
+  label_convention: zero_anomaly
+  notes: >
+    512x217x204 int16, ~3.7 m/px. The shipped Salinas_gt.mat holds 17 values
+    (background plus 16 land-cover classes) and is deliberately unused -- see
+    change C5.
+
+preprocess:
+  water_absorption_bands_nm: [[1350.0, 1450.0], [1800.0, 1950.0]]
+  snr_threshold: null
+  clip_percentile: 99.9
+  # EXPLICIT, and this scene is why. Salinas is extremely low-rank: 99% of its
+  # variance sits in THREE components, so `pca_variance: 0.99` alone selects
+  # K=3 -- and the false-alarm rate on this anomaly-free scene is a steep
+  # function of exactly that choice:
+  #
+  #     K=3 (what 0.99 picks)  14.62%     K=10   0.31%
+  #     K=5                    11.00%     K=15   0.22%
+  #                                       K=30   0.00%
+  #
+  # The variance rule picks the single worst width available. It optimises for
+  # the wrong thing: anomalies are low-variance by construction, so "retain 99%
+  # of the variance" discards precisely the directions that separate them. Once
+  # those directions are gone the *background* is heterogeneous in what remains,
+  # Otsu finds a split in it, and 14.6% of an anomaly-free scene is flagged.
+  #
+  # Keep pca_variance as the documented fallback, but never as the operative
+  # rule. See RESULTS.md, "Variance-retained PCA selection is actively harmful".
+  pca_n_components: 15
+  pca_variance: 0.99
+
+rx:
+  ridge: 1.0e-6
+
+autoencoder:
+  # Not part of the edge-case run; RX alone establishes the false-positive rate.
+  enabled: false
+
+score_fusion:
+  mode: weighted
+  alpha: 0.5
+  threshold_method: otsu
+  threshold_percentile: 99.0
+
+sam:
+  top_k: 3
+  low_confidence_angle_rad: 0.25
+  library_path: data/speclib/ecostress/curated_library.npz
+
+seed: 0
+deterministic: true
+output_root: results

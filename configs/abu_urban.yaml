@@ -1,0 +1,64 @@
+# ABU (Airport-Beach-Urban) series -- PRD §7.1
+#
+# 13 scenes, each with a binary anomaly ground truth, used for cross-scene
+# generalization testing. Band counts vary across scenes (189-205 versus
+# Salinas' 224), which is exactly what §11 edge case 5 tests: nothing in the
+# loader or PCA path may assume a band count.
+#
+# `path` names one scene; the CLI accepts a glob to sweep the series.
+
+dataset:
+  name: abu_urban
+  kind: hyperspectral
+  path: data/hyperspectral/abu/abu-urban-1.mat
+  data_key: data
+  ground_truth_path: data/hyperspectral/abu/abu-urban-1.mat
+  ground_truth_key: map
+  label_convention: binary_mask
+  notes: >
+    ABU .mat files carry both the cube ('data') and the anomaly mask ('map') in
+    a single file, hence the identical path with differing keys.
+
+preprocess:
+  water_absorption_bands_nm: [[1350.0, 1450.0], [1800.0, 1950.0]]
+  snr_threshold: null
+  clip_percentile: 99.9
+  # ABU's RX ablation plateaus at 15-50 components (0.9627 / 0.9636); 15 is the
+  # value shared with had100.yaml so both datasets run one dimensionality.
+  pca_n_components: 15
+  pca_variance: 0.99
+
+rx:
+  ridge: 1.0e-6
+
+autoencoder:
+  enabled: true
+  patch_size: 7
+  # Fig. 1: latent d << K, encoder 32 -> 64 -> 128, kernels 3x3x7 -> 3x3x5 -> 3x3x3.
+  latent_dim: 8
+  encoder_channels: [32, 64, 128]
+  kernel_spatial: 3
+  kernel_spectral_depths: [7, 5, 3]
+  lam: 0.1
+  epochs: 20
+  batch_size: 256
+  max_patches: 20000
+  device: auto
+
+score_fusion:
+  mode: weighted
+  alpha: 0.5
+  # Otsu, not percentile -- see the note in had100.yaml. ABU makes the point
+  # sharply: at p99 its F1 spans 0.09-0.67 while true anomaly fractions span
+  # 0.08%-2.72%, so a fixed 1% quota mostly measures that mismatch.
+  threshold_method: otsu
+  threshold_percentile: 99.0
+  threshold_gamma: 3.0
+
+sam:
+  top_k: 3
+  low_confidence_angle_rad: 0.25
+
+seed: 0
+deterministic: true
+output_root: results
