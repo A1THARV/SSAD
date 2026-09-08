@@ -557,7 +557,69 @@ stated limitation, not a defence.
 
 ---
 
-## 11. Provenance
+## 11. FLAME 3's image-level fire task is saturated by a one-line baseline
+
+M4 was specified as image-level fire detection with a CNN. Before building one,
+the trivial baseline was measured — and it leaves nothing for a model to do.
+
+**A single scalar, the maximum pixel temperature, separates all 738 frames
+perfectly.**
+
+| single feature | AUC | best F1 |
+|---|---|---|
+| **max T** | **1.0000** | **1.0000** |
+| fraction of pixels > 100 °C | 1.0000 | 1.0000 |
+| 99.9th percentile T | 0.9999 | 0.9992 |
+| 99th percentile T | 0.9900 | 0.9773 |
+| std T | 0.9784 | 0.9761 |
+| mean T | 0.7437 | 0.9147 |
+
+The margin is not narrow. The coldest fire frame peaks at **108.25 °C**; the
+hottest no-fire frame peaks at **47.19 °C**. A 61 °C gap, zero overlap, 622
+fire and 116 no-fire frames.
+
+### There is no harder subset hiding inside it
+
+Restricting the fire class to the smallest fires by burning area, keeping every
+no-fire frame:
+
+| fire subset | n fire | AUC (max T) | coldest fire peak |
+|---|---|---|---|
+| all | 622 | 1.0000 | 108.25 °C |
+| smallest 50 % by area | 312 | 1.0000 | 108.25 °C |
+| smallest 25 % | 156 | 1.0000 | 108.25 °C |
+| smallest 10 % | 63 | 1.0000 | 108.25 °C |
+| smallest 5 % | 32 | 1.0000 | 108.25 °C |
+
+The smallest fire in the dataset has essentially **no** pixels above 100 °C
+(0.000 % after rounding) and still peaks at 108.2 °C. The task is saturated at
+every difficulty level the data contains.
+
+### What follows
+
+A CNN cannot demonstrate value here. It can at best tie a threshold, and
+reporting "CNN AUC ≈ 1.0" beside "max(T) AUC = 1.0" would be padding — the same
+error as quoting a fused score against a baseline that was never measured.
+
+This is not a defect in FLAME 3. The dataset was built for computer vision on
+**RGB**, where fire detection is genuinely hard; the radiometric thermal channel
+is supplementary, and in that channel wildfire is trivially separable because
+fire is, physically, the hot thing. The task is easy for the same reason the
+data is good.
+
+**Consequence for the paper.** M4's image-level result is the baseline itself,
+reported as such: fire detection on radiometric thermal is solved by a physical
+threshold, and the contribution is the measurement, not a model. The thermal
+branch's substantive work is Eq. 5 temperature retrieval (M5), where radiometry
+is doing something a threshold cannot.
+
+Measured over all 738 frames; no train/test split is involved because no model
+is fitted — a threshold on absolute temperature has no parameters learned from
+these labels.
+
+---
+
+## 12. Provenance
 
 Every figure above traces to a run directory or a named script. `results/` is
 gitignored (it holds score maps); the run records are reproducible from the
@@ -571,6 +633,7 @@ configs and commands listed here.
 | §3 published ranking | `results/had100_baselines.json` | — |
 | §4–§7 ablations, 276-band α sweep | `results/m2/ablations.json` via `scripts/run_ablations.py` | — |
 | §7 band50 α sweep (the one to quote) | `results/m2-band50/ablations.json` | — |
+| §11 FLAME 3 baseline saturation | `scripts/thermal_baseline.py` | — |
 | §10 train-on-test-scene | `results/m2/train_on_test_scene.json` via `scripts/train_on_test_scene.py` | — |
 | §8 Salinas zero-anomaly | `results/salinas-zero-anomaly_20260823-163509` | `86f4b5c9576a` |
 | §9 corpus PCA timing, stability spectrum | `BandReducer.fit_streaming` on the 1,040-crop corpus | — |

@@ -71,7 +71,7 @@ class Source:
     sha256: str | None = None
     manual_reason: str = ""
     required_for: str = ""
-    kind: str = "file"  # file | git | gdrive
+    kind: str = "file"  # file | dir | git | gdrive
     notes: str = ""
 
     @property
@@ -201,6 +201,7 @@ SOURCES: list[Source] = [
         key="flame3",
         group="thermal",
         target="thermal/flame3_cv_subset",
+        kind="dir",
         url=None,
         page="https://www.kaggle.com/datasets/brycehopkins/flame-3-computer-vision-subset-sycan-marsh",
         min_bytes=1024 * 1024 * 1024,
@@ -218,7 +219,16 @@ SOURCES: list[Source] = [
             "With a Kaggle token: kaggle datasets download -d "
             "brycehopkins/flame-3-computer-vision-subset-sycan-marsh. "
             "Alternative host: IEEE DataPort, DOI 10.21227/w0mz-aq48. "
-            "Cite: Hopkins et al., arXiv:2412.02831."
+            "Cite: Hopkins et al., arXiv:2412.02831.\n"
+            "AFTER EXTRACTING: Kaggle unpacks to 'FLAME 3 CV Dataset (Sycan Marsh)'. "
+            "Rename it to flame3_cv_subset -- the spaces and parentheses break shell "
+            "quoting in enough places to be worth the one-time rename.\n"
+            "VERIFIED ON DISK 2026-09-04: 7,535,535,691 bytes, 2,952 files, laid out as "
+            "{Fire,No Fire}/{RGB/{Raw,Corrected FOV},Thermal/{Raw JPG,Celsius TIFF}} -- "
+            "622 fire and 116 no-fire quartets. The Celsius TIFF is radiometric as "
+            "claimed: mode F float32 640x512, and a fire frame spans -22.8 to 573.0 C "
+            "against a no-fire frame's -40.6 to 25.6 C (2.78% of pixels above 100 C "
+            "versus 0.00%). That is per-pixel temperature, so Eq. 5 is unblocked."
         ),
     ),
     # NADIR plot set is deliberately NOT listed. It is 32.59 GB against ~51 GB
@@ -252,7 +262,11 @@ SOURCES: list[Source] = [
         min_bytes=1024 * 100,
         manual_reason=(
             "Spectra are selected through the site's search interface at "
-            "https://speclib.jpl.nasa.gov/library, so the subset is chosen by hand."
+            "https://speclib.jpl.nasa.gov/library, so the subset is chosen by hand.\n"
+            "BLOCKED 2026-09-04 to 2026-09-13: the JPL ordering page is down for "
+            "scheduled maintenance ('The ordering page will be unavailable between "
+            "September 4th - 13th'). Time-boxed, not an account wall -- so do NOT "
+            "switch to speclib_usgs over this. Retry from 2026-09-13."
         ),
         required_for="M3 (SAM), M5 (emissivity) -- not needed before Phase 4",
         notes=(
@@ -289,7 +303,18 @@ REJECTED = {
     "HIT-UAV": "Verified 8-bit: source video is 640x512 uint8 greyscale H.264. Superseded by FLAME 3.",
     "M3OT": "Video-derived from a Mavic 3T, so 8-bit; urban tracking, not wildfire. Superseded by FLAME 3.",
     "ECOSTRESS L2T_LSTE": "Satellite thermal product, no longer needed -- FLAME 3 is radiometric (C8).",
-    "MODIS/VIIRS FIRMS": "Not needed -- FLAME 3 ships its own fire masks, so no cross-referencing.",
+    # CORRECTED 2026-09-04, from the files rather than the dataset description.
+    # The CV subset ships NO pixel masks -- no mask images, no label CSV, only
+    # the Fire/ vs No Fire/ folder split, i.e. IMAGE-level labels. The earlier
+    # note here claimed per-pixel fire masks and was wrong.
+    "MODIS/VIIRS FIRMS": (
+        "Still not needed, but for a different reason than first recorded. FLAME 3's CV "
+        "subset gives image-level fire/no-fire labels, not masks, so M4 is an "
+        "image-level detection result. FIRMS is 375 m/px satellite thermal -- far too "
+        "coarse to supply pixel masks for 640x512 UAV frames, so it could not repair "
+        "the gap even if added. Pixel-level maps are reported qualitatively and "
+        "labelled as unvalidated at pixel level."
+    ),
     "LTIR": "Ground-level tracking benchmark, non-radiometric, labels need reframing (C8).",
 }
 
@@ -323,6 +348,21 @@ def dir_size(path: Path) -> int:
     return sum(p.stat().st_size for p in path.rglob("*") if p.is_file())
 
 
+def _nearby_archive(path: Path) -> Path | None:
+    """Find an un-extracted archive sitting where a directory was expected.
+
+    The likeliest way a hand-placed dataset fails: the zip is downloaded to the
+    right place but never unpacked. Saying so beats "directory not found".
+    """
+    parent = path.parent
+    if not parent.is_dir():
+        return None
+    for candidate in sorted(parent.iterdir()):
+        if candidate.is_file() and candidate.suffix.lower() in {".zip", ".tar", ".gz", ".7z"}:
+            return candidate
+    return None
+
+
 def looks_like_html(path: Path) -> bool:
     """Detect a login page or error page saved under a data filename."""
     try:
@@ -342,6 +382,31 @@ def verify(source: Source) -> Status:
         if size < source.min_bytes:
             return Status(source, False, f"clone looks empty ({size:,} bytes)")
         return Status(source, True, f"{size:,} bytes")
+
+    if source.kind == "dir":
+        # A hand-extracted archive, not a single file. Checked by tree size and
+        # file count rather than by checksum: the archive's own digest says
+        # nothing once it is unpacked, and re-zipping to verify would cost more
+        # than the check is worth.
+        if not path.is_dir():
+            hint = ""
+            archive = _nearby_archive(path)
+            if archive is not None:
+                hint = (
+                    f" -- found {archive.name} beside it; extract it INTO "
+                    f"{path.name}/ rather than leaving it zipped"
+                )
+            return Status(source, False, f"directory not found{hint}")
+        size = dir_size(path)
+        n_files = sum(1 for p in path.rglob("*") if p.is_file())
+        if size < source.min_bytes:
+            return Status(
+                source,
+                False,
+                f"only {size:,} bytes in {n_files:,} files, expected at least "
+                f"{source.min_bytes:,} -- extraction may be incomplete",
+            )
+        return Status(source, True, f"{size:,} bytes across {n_files:,} files")
 
     if not path.is_file():
         return Status(source, False, "missing")
