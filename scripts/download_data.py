@@ -256,17 +256,26 @@ SOURCES: list[Source] = [
     Source(
         key="speclib_ecostress",
         group="speclib",
-        target="speclib/ecostress",
+        # The FILE, not its directory. An earlier version pointed at
+        # `speclib/ecostress` with the default kind="file", so verify() called
+        # is_file() on a directory and reported "missing" wherever the download
+        # was actually placed -- the same defect that hid FLAME 3. A source's
+        # target must name the thing being verified.
+        target="speclib/ecostress/spectra_all.txt",
         url=None,
         page="https://speclib.jpl.nasa.gov/download",
-        min_bytes=1024 * 100,
+        # The full library is thousands of spectra of a few hundred samples
+        # each, so a valid export is tens of MB. 1 MB is a floor that catches a
+        # login page or a truncated transfer without guessing the exact size;
+        # the digest is unpinned, so the first successful verify prints it for
+        # recording here.
+        min_bytes=1024 * 1024,
         manual_reason=(
             "Spectra are selected through the site's search interface at "
             "https://speclib.jpl.nasa.gov/library, so the subset is chosen by hand.\n"
             "ORDERED 2026-09-14: order ecospeclib-1789396065385, one item, "
             "spectra_all.txt. JPL emails a download link once the order is "
-            "processed; drop the file at the target path below.
-"
+            "processed; drop the file at the target path below.\n"
             "(The earlier 2026-09-04 to 2026-09-13 block was scheduled maintenance on "
             "the ordering page, now cleared.)"
         ),
@@ -275,8 +284,7 @@ SOURCES: list[Source] = [
             "PRIMARY library under change C4: 3,400+ spectra, and a superset here -- it "
             "already incorporates the USGS-Reston, JHU and JPL sub-libraries. "
             "Cite: Meerdink et al. (2019) RSE 230:111196; Baldridge et al. (2009) RSE "
-            "113:711-715.
-"
+            "113:711-715.\n"
             "TWO SUBSETS, NOT ONE. scripts/build_speclib.py extracts both from this "
             "single file: (a) a REFLECTANCE subset for Objective 2, minerals with SWIR "
             "absorption features, sized for a SWIR-diagnostic scene per RESULTS.md "
@@ -284,8 +292,7 @@ SOURCES: list[Source] = [
             "Objective 4, vegetation/char/ash/soil plus a metal kept deliberately as "
             "the out-of-class counterexample behind the 307 K error in section 13. The "
             "second turns Eq. 5's emissivity prior from a hardcoded constant into a "
-            "cited measurement.
-"
+            "cited measurement.\n"
             "NOTE: spectra_all.txt bundles the JHU, JPL and USGS sub-libraries on "
             "different wavelength grids, so many LWIR entries never reach SWIR and vice "
             "versa. build_speclib.py checks coverage PER ENTRY at build time and reports "
