@@ -189,6 +189,9 @@ Taken together these argue for adaptive, scene-responsive settings over globally
 | Fig. 1 box 4c draws `d_RX = √((x−μ)ᵀΣ⁻¹(x−μ))`; Eq. 2 has no square root | **Change the figure.** Eq. 2 matches Reed & Yu's original squared form. AUC is unaffected (monotone), but Fig. 1 stage 5 normalises by max before fusing, and `√S/max(√S) = √(S/max S)` compresses mid-range values upward — so the fusion balance and any distribution-based threshold genuinely shift. `rx_score` stays as Eq. 2. |
 | ~~Fig. 1 shows one PCA block feeding both the autoencoder and the RX branch~~ | **CLOSED — no edit needed. The figure was right.** Measured at M2: corpus-basis RX beats per-scene RX by **+0.0057 mAUC** at K=15 (0.9806 vs 0.9749) and is the best RX result anywhere in this work. The "keep them separate" reasoning below was wrong and is struck. `rx.pca_basis: corpus` is now the default. |
 | Table III wording | "100 test images from 94 source scenes". |
+| **Fig. 3 draws CNN -> LSTM -> anomaly heatmap** | **Redraw or caption it.** Same class of defect as Fig. 1's spurious square root: the figure depicts a pipeline that was not built and that the measurement says is unnecessary on this data. M4 ships as a physical threshold (AUC 1.0000, 61 C margin), so the drawn CNN->LSTM stack has no counterpart in the code. Two honest options: redraw Fig. 3 as the threshold detector actually used, or keep it and caption it as the architecture intended for fire-spread forecasting on the NADIR sequences (future work, not evaluated here). Do NOT leave it uncaptioned -- a reader matching figure to results finds a model that does not exist. |
+| **Discussion paragraph** | Add the consolidated preprocessing finding (RESULTS.md §12): three independent instances, across two modalities, of a standard preprocessing step normalising away the physically meaningful quantity. Write once with all three as evidence -- variance-retained PCA, SAM on PCA scores, per-frame thermal normalisation. This is the most generalisable result in the work and does not depend on hyperspectral imaging at all. |
+| §VII, M4 claim | Must read as image-level fire **presence**, with the explicit second sentence that pixel-level localisation was not evaluated because the CV subset ships no masks. Without it the AUC 1.0000 reads as a localisation claim. |
 | §V, deep-learning claim | The fused system (0.9843) beats AutoAD / LREN / RGAE. The **autoencoder alone is 0.9619, below AutoAD's 0.9688** — attribute the win to the fused pipeline, never to the deep component. |
 | §III / §VI, Objective 2 | State *before* M3 runs: HAD100's signal is at 455–700 nm, while SAM library matching depends on SWIR absorption features (2200–2350, 1400, 1900 nm) — the windows measured at 0.84–0.92 here. A weak SAM result on HAD100 indicts the benchmark's fit to Objective 2, not Eq. 4. Said in advance it is a prediction; said afterwards it is an excuse. Note also that the band50 config discards every SWIR band, so it cannot serve Objective 2 at all. |
 | §IV, whitening | Promote out of the ablation table into a **worked example**: the stability spectrum was measured first for an unrelated reason, produced a falsifiable prediction about a parameter nobody had measured, and held at both widths. That demonstrates a mechanism rather than a tuning surface, and it transfers to other sensors where a swept optimum does not. |
@@ -248,8 +251,25 @@ So the branches unify, Fig. 1 is true as drawn, and the second-PCA-path edit com
 
 ---
 
-## Phase 3 — Thermal baseline ⛔ HELD
-**Satisfies:** M4, FR-9.7/9.8 · **Effort:** ~2 sessions · **Blocked by:** PRD v2 change C8
+## Phase 3 — Thermal baseline ✅ SHIPPED AS A MEASUREMENT
+**Satisfies:** M4, FR-9.7/9.8 · **Effort:** ~1 session (spent) · **Unblocked:** FLAME 3 verified 2026-09-04
+
+**Status 2026-09-14.** 3.1 (loader + radiometric classification) and 3.2
+(calibration, clip reporting, normalisation) are built and tested. **3.3-3.5 are
+deliberately not built**, on evidence rather than for time: image-level fire
+presence is saturated by a one-line physical baseline -- max pixel temperature
+gives AUC 1.0000 over all 738 frames with a 61 C margin, holding to the smallest
+5% of fires by burning area. A CNN can at best tie that, and an LSTM has no
+sequences to consume in the CV subset. M4 therefore ships as the measurement
+(RESULTS.md §11), and the effort moves to M5 where radiometry does something a
+threshold cannot.
+
+Task 3.6's synthetic generator stays cancelled, and 3.5's temporal path is now
+**future work**: fire-spread forecasting on the NADIR plot sequences is the
+version of the temporal task that is not saturated, but it is 32.59 GB and a
+different paper.
+
+The original hold notice follows, retained for the record.
 
 **Do not implement.** PRD §7.3 is withdrawn: its datasets are ground-level equipment inspection, which is not remote sensing, and the paper's title claims remote sensing. The replacement is an owner decision between aerial thermal (serves Objective 3, likely non-radiometric so M5 stays blocked) and satellite thermal (serves Objective 4 and Eq. 5 directly, but at 70 m–375 m rather than drone scale). The decision edits the paper, not only the code.
 

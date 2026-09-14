@@ -557,10 +557,16 @@ stated limitation, not a defence.
 
 ---
 
-## 11. FLAME 3's image-level fire task is saturated by a one-line baseline
+## 11. Image-level fire *presence* is saturated by a one-line baseline
 
 M4 was specified as image-level fire detection with a CNN. Before building one,
 the trivial baseline was measured — and it leaves nothing for a model to do.
+
+**What was measured, stated narrowly.** This is image-level fire *presence*: a
+single binary flag per frame. It is **not** localisation. Objective 3 asks for
+per-frame anomaly heatmaps, and that task is neither measured nor claimed here,
+because FLAME 3's CV subset ships no ground-truth masks to score a heatmap
+against. The two tasks are different problems and only the first is saturated.
 
 **A single scalar, the maximum pixel temperature, separates all 738 frames
 perfectly.**
@@ -607,19 +613,161 @@ is supplementary, and in that channel wildfire is trivially separable because
 fire is, physically, the hot thing. The task is easy for the same reason the
 data is good.
 
+### The two sentences this reduces to
+
+For the paper, the result is exactly this pair, and the second is not optional:
+
+> Image-level fire presence on radiometric thermal is separable by a physical
+> threshold: **AUC 1.0000** on maximum pixel temperature, a **61 °C** margin and
+> zero overlap across 738 frames, holding to the smallest 5 % of fires by
+> burning area.
+>
+> **Pixel-level localisation was not evaluated**; the CV subset provides no
+> ground-truth masks.
+
+Without the second sentence, the first invites precisely the question it cannot
+answer — a reviewer reading "AUC 1.0000" against a paper whose Objective 3 is
+localisation will assume the heatmap was scored, and nothing else in the
+document would correct them.
+
 **Consequence for the paper.** M4's image-level result is the baseline itself,
-reported as such: fire detection on radiometric thermal is solved by a physical
+reported as such: fire *presence* on radiometric thermal is solved by a physical
 threshold, and the contribution is the measurement, not a model. The thermal
-branch's substantive work is Eq. 5 temperature retrieval (M5), where radiometry
-is doing something a threshold cannot.
+branch's substantive work is Eq. 5 temperature retrieval (M5) — a threshold can
+say fire is present, but it cannot say whether an anomaly is steel or concrete,
+and emissivity retrieval needs the radiometry in a way detection demonstrably
+does not. "M4 is trivial" is therefore also the argument for M5.
 
 Measured over all 738 frames; no train/test split is involved because no model
 is fitted — a threshold on absolute temperature has no parameters learned from
 these labels.
 
+**Future work, deliberately not started.** The temporal task that is *not*
+saturated is fire-spread forecasting on FLAME 3's NADIR plot sequences, where
+the question is where the fire goes next rather than whether it is present. That
+is 32.59 GB and a different paper; recorded here so the gap is visible rather
+than silently skipped.
+
 ---
 
-## 12. Provenance
+## 12. One failure mode, three times: preprocessing that normalises away the physics
+
+Three findings in this document look unrelated — they sit in different sections,
+two different modalities, and involve different mathematics. They are the same
+mistake.
+
+| # | The step | What it normalises away | Cost |
+|---|---|---|---|
+| §8 | Retain 99 % of variance in PCA | **Low-variance directions** — which is what an anomaly *is* | 14.6 % of an anomaly-free scene flagged |
+| §5 | Take Eq. 4's angle on PCA scores | **The physical origin** — mean-centring moves it from darkness to the corpus mean, so the angle stops measuring spectral shape | −0.0290 mAUC, worse than omitting the term |
+| §11 | Per-frame min-max on thermal frames | **Absolute temperature** — every frame's hottest pixel maps to 1.0 | Erases the only feature separating fire from field |
+
+Each step is standard. Each is defensible in isolation, and two of them are what
+a textbook recommends. Each destroys the exact physical quantity the downstream
+method depends on.
+
+**What makes this class dangerous is not that the steps are wrong — it is that
+none of them fail loudly.** Every one produces a plausible array of the right
+shape and dtype. The PCA still explains its variance; the angles are still in
+[0, π]; the normalised frames still look like thermal images. Models train
+without complaint. The accuracy loss arrives with no signature pointing back at
+its cause, and lands instead on the architecture, the hyperparameters, or the
+dataset — which is how a preprocessing bug becomes a permanent conclusion about
+a method.
+
+**The check that catches all three is one question, asked before the step and
+not after:** *what physical quantity does the downstream method depend on, and
+does this transformation preserve it?*
+
+* RX depends on low-variance structure → a variance-retention rule discards it.
+* SAM depends on the direction of a spectrum from the origin → mean-centring
+  moves the origin.
+* Fire detection depends on absolute temperature → min-max removes the scale.
+
+None of that needs an experiment. All three were caught here by measurement,
+which worked but is the expensive path: each cost a run, and the first two were
+caught only because an ablation happened to be scheduled. The question above is
+free, and it is the generalisable result — it does not depend on hyperspectral
+imaging, on wildfire, or on anything else specific to this work.
+
+This belongs in the paper's Discussion as a single paragraph with all three as
+evidence, not as three scattered warnings in three method sections. Three
+independent instances across two modalities is the claim; any one of them alone
+is an anecdote.
+
+---
+
+## 13. M5: the emissivity assumption dominates the retrieved temperature
+
+Eq. 5 inverted on real FLAME 3 fire pixels, at 10 µm, under four different
+material assumptions. **The sensor data is identical in every row** — only the
+assumed emissivity changes.
+
+Frame `00001`, 9,124 pixels above 100 °C, brightness temperature **213.4 °C**:
+
+| assumed material | ε | retrieved | bounds | spread |
+|---|---|---|---|---|
+| charred wood | 0.96 | 219.9 °C | 216.6 – 223.2 | 6.7 K |
+| dry grass | 0.95 | 221.5 °C | 218.2 – 226.7 | 8.5 K |
+| **steel** | **0.28** | **522.0 °C** | 406.9 – 1112.7 | **705.8 K** |
+| unlisted (assumed default) | 0.95 | 221.5 °C | 216.6 – 240.0 | 23.4 K |
+
+**A 300 °C swing from the material assumption alone.** Not from sensor noise,
+not from the inversion — the same radiance, read as steel rather than as charred
+wood, is a different physical claim about the scene.
+
+### Why this is the thermal branch's real contribution
+
+§11 showed a threshold detects fire perfectly. It cannot do this. Detection
+needs only that hot pixels be hot; retrieval needs to know *what is emitting*,
+and that is a materially harder question the radiometry is necessary for.
+
+It also connects the two objectives that looked independent. **Objective 2
+(material identification) is what makes Objective 4 (temperature retrieval)
+meaningful** — without knowing the material you cannot choose ε, and ε dominates
+the answer. The SAM branch is not a parallel nicety; it is the input this one
+needs. That dependency should be stated in the paper, because the two objectives
+are currently written as though they stand alone.
+
+### What is reported, and what is refused
+
+* **The mode is named:** `assumed-emissivity (single-band)`. Single-band data
+  cannot separate temperature from emissivity — that needs multiple bands — so
+  the assumption is unavoidable here and is labelled rather than hidden.
+* **Unlisted materials get a range, never a point estimate** (§11 edge case 11).
+  The default ε = 0.95 carries its stated 0.85–0.98 band into a 23.4 K spread,
+  so a reader sees how much of the number is assumption.
+* **Bounds are not inverted.** Higher ε means less correction and therefore a
+  *lower* temperature; swapping that would leave the central estimate correct
+  while reversing the error bars, which no downstream check would catch. Pinned
+  by test.
+* **Non-radiometric input is refused end to end.** The negative fixture
+  (`thermal_images_equip`, 8-bit false colour) raises rather than returning a
+  fabricated temperature, exercised on real files and not only in unit tests.
+
+### Eq. 5 is validated against an independent implementation
+
+Self-consistency cannot catch a wrong physical constant or a units error — both
+produce smooth, positive, plausible output. So `planck_radiance` is checked
+three independent ways:
+
+| check | what it validates | agreement |
+|---|---|---|
+| `astropy` BlackBody, 5 (λ, T) points from 0.5 µm / 5800 K to 100 µm / 50 K | the curve, pointwise | rel. 1e-9 |
+| Wien displacement law | where its peak sits | rel. 1e-3 |
+| Stefan–Boltzmann by integration | the area under it | rel. 1e-8 |
+
+The Stefan–Boltzmann check needed log-spaced sampling to get there. Linear
+sampling with 2,000,000 points still truncated enough long-wavelength tail to
+leave a 1.5e-4 error, where 200,000 log-spaced points give 4e-10 — loosening the
+tolerance instead would have produced a test tuned to its own sampling error
+rather than to the physics.
+
+Reproduce with `python scripts/thermal_retrieval.py`.
+
+---
+
+## 14. Provenance
 
 Every figure above traces to a run directory or a named script. `results/` is
 gitignored (it holds score maps); the run records are reproducible from the
@@ -634,6 +782,7 @@ configs and commands listed here.
 | §4–§7 ablations, 276-band α sweep | `results/m2/ablations.json` via `scripts/run_ablations.py` | — |
 | §7 band50 α sweep (the one to quote) | `results/m2-band50/ablations.json` | — |
 | §11 FLAME 3 baseline saturation | `scripts/thermal_baseline.py` | — |
+| §13 Eq. 5 retrieval | `results/thermal/flame3_retrieval.json` via `scripts/thermal_retrieval.py` | — |
 | §10 train-on-test-scene | `results/m2/train_on_test_scene.json` via `scripts/train_on_test_scene.py` | — |
 | §8 Salinas zero-anomaly | `results/salinas-zero-anomaly_20260823-163509` | `86f4b5c9576a` |
 | §9 corpus PCA timing, stability spectrum | `BandReducer.fit_streaming` on the 1,040-crop corpus | — |
