@@ -650,21 +650,30 @@ than silently skipped.
 
 ---
 
-## 12. One failure mode, three times: preprocessing that normalises away the physics
+## 12. One failure mode, four times: transformations that remove what is being measured
 
-Three findings in this document look unrelated — they sit in different sections,
-two different modalities, and involve different mathematics. They are the same
-mistake.
+Four findings in this document look unrelated — different sections, two
+modalities, different mathematics, and one of them is not even a preprocessing
+step. They are the same mistake.
 
 | # | The step | What it normalises away | Cost |
 |---|---|---|---|
 | §8 | Retain 99 % of variance in PCA | **Low-variance directions** — which is what an anomaly *is* | 14.6 % of an anomaly-free scene flagged |
 | §5 | Take Eq. 4's angle on PCA scores | **The physical origin** — mean-centring moves it from darkness to the corpus mean, so the angle stops measuring spectral shape | −0.0290 mAUC, worse than omitting the term |
 | §11 | Per-frame min-max on thermal frames | **Absolute temperature** — every frame's hottest pixel maps to 1.0 | Erases the only feature separating fire from field |
+| §14 | Running the mixing experiment noiseless | **The difficulty being measured** — exact linear mixing is analytically solvable | Every band subset scores 1.000; would have read as refuting §3 |
+
+The first three are preprocessing steps destroying a physical quantity. The
+fourth has a different origin — **experiment construction removing the difficulty
+the experiment exists to measure** — and that is what shows the pattern is not
+specific to preprocessing. The unifying statement across all four:
+
+> **a plausible number, produced by a transformation that removed the very thing
+> the number was supposed to measure.**
 
 Each step is standard. Each is defensible in isolation, and two of them are what
-a textbook recommends. Each destroys the exact physical quantity the downstream
-method depends on.
+a textbook recommends. Each destroys the exact quantity the downstream claim
+depends on.
 
 **What makes this class dangerous is not that the steps are wrong — it is that
 none of them fail loudly.** Every one produces a plausible array of the right
@@ -675,7 +684,7 @@ its cause, and lands instead on the architecture, the hyperparameters, or the
 dataset — which is how a preprocessing bug becomes a permanent conclusion about
 a method.
 
-**The check that catches all three is one question, asked before the step and
+**The check that catches all four is one question, asked before the step and
 not after:** *what physical quantity does the downstream method depend on, and
 does this transformation preserve it?*
 
@@ -683,17 +692,20 @@ does this transformation preserve it?*
 * SAM depends on the direction of a spectrum from the origin → mean-centring
   moves the origin.
 * Fire detection depends on absolute temperature → min-max removes the scale.
+* A band ablation depends on bands mattering → noiseless exact mixing makes
+  them not matter.
 
-None of that needs an experiment. All three were caught here by measurement,
-which worked but is the expensive path: each cost a run, and the first two were
+None of that needs an experiment. All four were caught here by measurement,
+which worked but is the expensive path: each cost a run, and two of them were
 caught only because an ablation happened to be scheduled. The question above is
 free, and it is the generalisable result — it does not depend on hyperspectral
 imaging, on wildfire, or on anything else specific to this work.
 
-This belongs in the paper's Discussion as a single paragraph with all three as
-evidence, not as three scattered warnings in three method sections. Three
-independent instances across two modalities is the claim; any one of them alone
-is an anecdote.
+This belongs in the paper's Discussion as a single paragraph with all four as
+evidence, not as scattered warnings in four method sections. Four independent
+instances, across two modalities and two *origins* — three in preprocessing, one
+in experiment design — is the claim; any one alone is an anecdote, and confining
+it to preprocessing would understate where it can strike.
 
 ---
 
@@ -894,43 +906,104 @@ python scripts/sam_mixing_experiment.py`.
 
 ---
 
-## 14. M3: identification needs SWIR — §3's prediction, measured
+## 14. Non-diagnostic bands actively degrade performance, and which bands are diagnostic is task-dependent
 
-§3 measured that HAD100's *detection* signal lives at 455–700 nm, and predicted
-that *identification* would need the SWIR absorption features a spectral library
-encodes. That prediction is now tested — and it required a controlled experiment,
-because no real scene can be re-flown with half its spectrum removed.
+**This is the work's most general result, and it is measured twice in opposite
+directions on the same data.**
+
+| | best window | worst window | does the full range win? |
+|---|---|---|---|
+| **Detection** (§3, RX mAUC) | **visible** 0.9799 | SWIR-ish 0.9162 | **No** — full 276 bands give 0.9647 |
+| **Identification** (§14, a = 0.10) | **SWIR** 0.588 | visible 0.156 | **No** — full 276 bands give 0.404 |
+
+Two claims, neither obvious:
+
+1. **More spectral data makes performance worse.** In both directions, the
+   best single window beats the full 276-band range. Bands carrying no
+   diagnostic information for the task do not sit inertly; they add noise to
+   the distance or angle being computed, and cost accuracy.
+2. **Which bands are diagnostic is a property of the task, not the sensor or
+   the scene.** The same pixels, the same instrument: detection wants
+   455–700 nm and is hurt by SWIR; identification wants 1500–2450 nm and is
+   hurt by the visible.
+
+This converts the Discussion's "detection and identification need different
+bands" from an architectural argument into a measured result, and it is why the
+pipeline exposes `good_bands_preset` per task rather than fixing one band set
+for the whole system.
+
+§3 predicted the second half of this before any of it was measured. That the
+prediction held is worth one sentence; the symmetry is the contribution.
+
+---
+
+### The identification measurement
 
 **Synthetic, and labelled so.** Real ECOSTRESS mineral spectra, resampled to the
 AVIRIS-NG grid, mixed into a real HAD100 background at known sub-pixel abundance,
 with Gaussian noise at known SNR. The spectra and the background are real; the
 mixing and the noise are not. Ground truth is exact by construction, which is the
-point: it is the one thing Cuprite cannot currently supply (§14.4).
+justification — it is the one thing Cuprite cannot currently supply (§14.4).
 
-### The result
+Top-1 material identification, background-removed matching, **SNR 20 dB**,
+250 trials per cell. Material drawn uniformly then a spectrum of that material,
+so chance is 1/15 = **0.067**.
 
-Top-1 material identification accuracy, 15 materials (chance = 0.067), SNR 20 dB,
-matching on the background-removed deviation:
-
-| bands | | a = 1.0 | 0.75 | 0.50 | 0.30 | 0.20 | **0.10** | 0.05 |
+| bands | n | a = 1.0 | 0.75 | 0.50 | 0.30 | 0.20 | 0.10 | 0.05 |
 |---|---|---|---|---|---|---|---|---|
-| **swir** | 126 | 0.810 | 0.825 | 0.825 | 0.760 | 0.680 | **0.565** | 0.385 |
-| full | 276 | 0.945 | 0.950 | 0.905 | 0.875 | 0.680 | 0.410 | 0.265 |
-| vnir | 101 | 0.835 | 0.700 | 0.510 | 0.295 | 0.235 | 0.180 | 0.105 |
-| **visible** | 50 | 0.730 | 0.545 | 0.420 | 0.325 | 0.205 | **0.185** | 0.150 |
+| **swir** | 126 | 0.896 | 0.920 | 0.884 | 0.804 | 0.728 | **0.588** | **0.428** |
+| full | 276 | **0.984** | **0.992** | **0.944** | **0.868** | 0.748 | 0.404 | 0.196 |
+| vnir | 101 | 0.792 | 0.660 | 0.496 | 0.304 | 0.212 | 0.200 | 0.080 |
+| visible | 50 | 0.684 | 0.496 | 0.356 | 0.252 | 0.244 | 0.156 | 0.116 |
 
-**The prediction holds, and the symmetry with §3 is exact.**
+At **SNR 10 dB** the ordering holds and every value falls:
 
-| | best window | worst window |
-|---|---|---|
-| **Detection** (§3, RX mAUC) | visible 0.9799 | SWIR-ish 0.9162 |
-| **Identification** (here, a = 0.10) | SWIR 0.565 | visible 0.185 |
+| bands | a = 1.0 | 0.50 | 0.20 | 0.10 | 0.05 |
+|---|---|---|---|---|---|
+| swir | 0.580 | 0.548 | 0.408 | 0.244 | 0.148 |
+| full | 0.908 | 0.640 | 0.296 | 0.156 | 0.096 |
+| vnir | 0.536 | 0.228 | 0.112 | 0.096 | 0.100 |
+| visible | 0.420 | 0.240 | 0.128 | 0.072 | 0.088 |
 
-The two objectives want opposite ends of the same spectrum, now measured on both
-sides rather than argued on one. And the mirror runs deeper: just as adding SWIR
-*hurt* detection, **adding the visible bands hurts identification** — at a ≤ 0.10,
-SWIR alone (0.565) beats the full range (0.410), because the visible bands
-contribute noise without contributing diagnostic features.
+**Where the crossover sits.** The full range wins at high abundance, where there
+is enough signal that extra bands help more than they hurt. SWIR-only overtakes
+it below a ≈ 0.20 and is ahead by 1.5–2× at a ≤ 0.10 — the regime that matters,
+since a sub-pixel target is the case identification is *for*.
+
+**Operating point, labelled.** The abundance and SNR grids were fixed in the
+script before the first run. The **a = 0.10, SNR 20 dB cell quoted above was not**
+— it was chosen after seeing the results, because it is where the gap is widest.
+It gets the same treatment as §7's α = 0.90: reported, not claimed as a
+pre-registered finding, which is why the full curves are given rather than the
+single cell. `ABLATION_SNRS_DB` was likewise chosen after discovering the
+noiseless case was degenerate (below), a methodological correction rather than a
+selection, but recorded for the same reason.
+
+**Do not read anything into visible versus VNIR.** At 250 trials the standard
+error is ≈ 0.03, so 0.156 against 0.200 is well inside noise. The finding is that
+both collapse, not that one collapses further.
+
+### Fifteen materials is a controlled subset, and the figure is an upper bound
+
+Identification difficulty scales with the number of candidates. Measured, full
+range, SNR 20 dB:
+
+| reference library | chance | a = 0.50 | a = 0.20 | a = 0.10 |
+|---|---|---|---|---|
+| 5 materials | 0.200 | 0.972 | 0.880 | 0.644 |
+| 10 materials | 0.100 | 0.984 | 0.840 | 0.524 |
+| 15 materials | 0.067 | 0.952 | 0.704 | 0.364 |
+
+Accuracy falls monotonically as the library grows, and a realistic mineral
+library holds hundreds of distinct species rather than fifteen. **These figures
+are therefore an upper bound on operational performance, not an estimate of it.**
+
+**A baseline correction.** An earlier draft quoted chance as 1/15 = 0.067 while
+drawing targets uniformly over *spectra*. The subset is heavily imbalanced —
+feldspar is 55 of 238 entries, goethite is 1 — so the trivial majority-class
+strategy would have scored **0.231**, and visible-only's 0.185 was *below* it.
+The draw is now balanced over materials, which makes 0.067 the honest chance
+rate and the numbers above comparable to it.
 
 ### Three construction errors, each of which produced a plausible table
 
@@ -939,47 +1012,28 @@ construction. Each of these was caught by a result that looked wrong:
 
 **1. Mismatched units made the abundance axis a lie.** HAD100's crops are not
 reflectance fractions — mean 2.51, against a library mean of 0.60. Mixed
-unscaled, a nominal `a = 0.75` pixel draws 0.564 of its signal from the target
-and **0.626 from the "25%" background**. Accuracy collapsed at every `a < 1` for
-a reason with nothing to do with SAM. Caught because the collapse was a cliff
+unscaled, a nominal `a = 0.75` pixel drew 0.564 of its signal from the target and
+**0.626 from the "25%" background**. Accuracy collapsed at every `a < 1` for a
+reason with nothing to do with SAM. Caught because the collapse was a cliff
 rather than a slope.
 
 **2. A noiseless experiment is exactly solvable, and scores 1.000 everywhere.**
 With exact linear mixing, `observed − bg = a·(target − bg)` is the reference
 scaled by `a`, and SAM is magnitude-invariant, so the angle to the correct entry
 is *identically zero*. The first band ablation duly reported perfect accuracy on
-visible-only bands — which would have read as **refuting §3** while in fact
-measuring nothing at all. Noise is what makes band choice matter: diagnostic
-absorptions survive it and continuum shape does not.
+visible-only bands — which would have read as **refuting §3** while measuring
+nothing at all. Noise is what makes band choice matter: diagnostic absorptions
+survive it and continuum shape does not.
 
 **3. Matching the raw pixel answers a different question.** Against pure library
 spectra with no background removal, accuracy falls to chance for any minority
-target:
-
-| | a = 1.0 | 0.75 | 0.50 | 0.10 |
-|---|---|---|---|---|
-| raw mixed pixel | 1.000 | 0.240 | 0.040 | 0.040 |
-| background removed | 1.000 | 1.000 | 1.000 | 1.000 *(noiseless)* |
-
-That is not a flaw in SAM. As abundance falls, every mixture converges on the
-background *regardless of what was mixed in*, so the nearest library entry
-becomes whichever sits closest to the background — the same one every trial. The
-pipeline is not affected, because RX already defines an anomaly as a departure
-from background; matching the deviation is what it has available. But reporting
-only the second row would overstate SAM, and only the first would misdescribe
-the pipeline, so both are reported.
-
-### Noise sensitivity
-
-Full range, background-removed:
-
-| SNR | a = 1.0 | 0.50 | 0.20 | 0.10 | 0.05 |
-|---|---|---|---|---|---|
-| noiseless | 1.000 | 1.000 | 1.000 | 1.000 | 1.000 |
-| 40 dB | 1.000 | 0.995 | 0.985 | 0.975 | 0.880 |
-| 30 dB | 0.995 | 0.995 | 0.945 | 0.855 | 0.575 |
-| 20 dB | 0.930 | 0.920 | 0.675 | 0.395 | 0.275 |
-| 10 dB | 0.875 | 0.630 | 0.260 | 0.175 | 0.160 |
+target — 1.000 at a = 1.0, then 0.240, 0.040, 0.040. That is not a flaw in SAM:
+as abundance falls every mixture converges on the background *regardless of what
+was mixed in*, so the nearest library entry becomes whichever sits closest to the
+background, the same one every trial. The pipeline is unaffected, because RX
+already defines an anomaly as a departure from background, and matching the
+deviation is what it has available. Both are reported — only the second would
+overstate SAM, only the first would misdescribe the pipeline.
 
 Reproduce with `python scripts/sam_mixing_experiment.py`.
 

@@ -106,6 +106,11 @@ SNRS_DB = (np.inf, 40.0, 30.0, 20.0, 10.0)
 #: see the comment at the ablation itself.
 ABLATION_SNRS_DB = (20.0, 10.0)
 
+#: Reference-library sizes, in distinct materials. Identification difficulty
+#: scales with how many candidates there are, so a figure quoted against a
+#: 15-material subset is an upper bound on what a realistic library would give.
+LIBRARY_SIZES = (5, 10, 15)
+
 
 def load_library(path: Path = CURATED):
     if not path.is_file():
@@ -206,9 +211,20 @@ def run(
     if remove_background:
         ref = ref - bg
 
+    # Draw the MATERIAL uniformly, then a spectrum of that material -- not a
+    # spectrum uniformly. The subset is heavily imbalanced (feldspar 55, quartz
+    # 51, goethite 1), so drawing over spectra would make the trivial
+    # majority-class strategy score 55/238 = 0.231 and quietly set the bar
+    # there. Balancing makes 1/n_materials the honest chance rate.
+    by_material = {}
+    for i, m in enumerate(materials):
+        by_material.setdefault(m, []).append(i)
+    classes = sorted(by_material)
+
     hits = 0
     for _ in range(n_trials):
-        idx = int(rng.integers(library.shape[0]))
+        material = classes[int(rng.integers(len(classes)))]
+        idx = int(rng.choice(by_material[material]))
         target = resampled[idx][mask]
         mixed = abundance * target + (1.0 - abundance) * bg
         observed = add_noise(mixed, snr_db, rng)
@@ -217,7 +233,7 @@ def run(
         if not np.all(np.isfinite(observed)) or np.linalg.norm(observed) == 0:
             continue
         angles = spectral_angle_batch(observed, ref)[0]
-        hits += int(materials[int(np.argmin(angles))] == materials[idx])
+        hits += int(materials[int(np.argmin(angles))] == material)
     return hits / n_trials
 
 
@@ -324,9 +340,38 @@ def main(argv=None) -> int:
                           remove_background=True, resampled=resampled),
     )
 
-    chance = 1.0 / len(set(materials))
-    report["chance_accuracy"] = chance
-    print(f"\nchance accuracy with {len(set(materials))} materials: {chance:.3f}")
+    # --- Library size: how many candidate materials must be told apart -----
+    print("\nBackground-removed matching versus REFERENCE LIBRARY SIZE, "
+          "full range, SNR 20 dB")
+    print("  " + " " * 12 + "".join(f"{a:>8.2f}" for a in ABUNDANCES)
+          + "    <- target abundance")
+    all_materials = sorted(set(materials))
+    for size in LIBRARY_SIZES:
+        if size > len(all_materials):
+            continue
+        keep_m = set(all_materials[:size])
+        sel = np.array([m in keep_m for m in materials])
+        row = []
+        for a in ABUNDANCES:
+            acc = run(library_nm, library[sel], materials[sel], sensor_nm, background,
+                      full, a, 20.0, args.trials, rng, remove_background=True,
+                      resampled=resampled[sel])
+            row.append(acc)
+            report["accuracy"].setdefault("library_size", {})[f"{size}|a={a}"] = acc
+        print(f"  {size:>2} materials" + "".join(f"{v:>8.3f}" for v in row)
+              + f"   (chance {1/size:.3f})")
+
+    n_materials = len(set(materials))
+    counts = {m: int((materials == m).sum()) for m in set(materials)}
+    majority = max(counts.values()) / len(materials)
+    report["chance_balanced"] = 1.0 / n_materials
+    report["majority_class_rate_unbalanced"] = majority
+    report["material_counts"] = counts
+    report["sampling"] = "material drawn uniformly, then a spectrum of that material"
+    print(f"\nbaselines with {n_materials} materials:")
+    print(f"  chance, balanced draw (this experiment)   {1 / n_materials:.3f}")
+    print(f"  majority class, had the draw been over    {majority:.3f}")
+    print(f"    spectra instead (feldspar is 23% of them)")
 
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
