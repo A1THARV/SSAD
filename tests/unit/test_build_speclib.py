@@ -19,6 +19,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 from build_speclib import (  # noqa: E402
     EMISSIVITY,
     REFLECTANCE,
+    SENSOR_BAND_UM,
+    fallback_note,
     parse_ecostress,
     select,
     write_subset,
@@ -47,7 +49,7 @@ def _library(tmp_path: Path, records: list[str]) -> Path:
 def test_parses_multiple_records(tmp_path):
     path = _library(tmp_path, [
         _record("Kaolinite KGa-1", "Reflectance", 0.35, 2.6),
-        _record("Dry grass", "Emissivity", 7.5, 14.5),
+        _record("Dry grass", "Emissivity", 7.4, 14.0),
     ])
     spectra = parse_ecostress(path)
     assert [s.name for s in spectra] == ["Kaolinite KGa-1", "Dry grass"]
@@ -92,7 +94,7 @@ def test_coverage_is_checked_against_each_subset_separately(tmp_path):
     # The same library serves two subsets wanting opposite ends of the spectrum.
     path = _library(tmp_path, [
         _record("Kaolinite", "Reflectance", 0.35, 2.6),
-        _record("Dry grass", "Emissivity", 7.5, 14.5),
+        _record("Dry grass", "Emissivity", 7.4, 14.0),
     ])
     spectra = parse_ecostress(path)
     assert [s.name for s in select(spectra, REFLECTANCE)[0]] == ["Kaolinite"]
@@ -105,13 +107,13 @@ def test_coverage_is_checked_against_each_subset_separately(tmp_path):
 
 
 def test_wrong_measurement_type_is_excluded(tmp_path):
-    path = _library(tmp_path, [_record("Dry grass", "Reflectance", 7.5, 14.5)])
+    path = _library(tmp_path, [_record("Dry grass", "Reflectance", 7.4, 14.0)])
     kept, dropped = select(parse_ecostress(path), EMISSIVITY)
     assert kept == [] and dropped["wrong_type"] == 1
 
 
 def test_unrelated_material_is_excluded(tmp_path):
-    path = _library(tmp_path, [_record("Polystyrene", "Emissivity", 7.5, 14.5)])
+    path = _library(tmp_path, [_record("Polystyrene", "Emissivity", 7.4, 14.0)])
     kept, dropped = select(parse_ecostress(path), EMISSIVITY)
     assert kept == [] and dropped["no_keyword"] == 1
 
@@ -120,8 +122,8 @@ def test_counterexamples_are_kept_and_flagged(tmp_path):
     # Steel is deliberately retained: it is what produces the 307 K
     # across-class error in RESULTS.md §13, so the library must carry it.
     path = _library(tmp_path, [
-        _record("Dry grass", "Emissivity", 7.5, 14.5),
-        _record("Stainless steel", "Emissivity", 7.5, 14.5),
+        _record("Dry grass", "Emissivity", 7.4, 14.0),
+        _record("Stainless steel", "Emissivity", 7.4, 14.0),
     ])
     kept, _ = select(parse_ecostress(path), EMISSIVITY)
     flags = {s.name: s.metadata["_is_counterexample"] for s in kept}
@@ -135,7 +137,7 @@ def test_counterexamples_are_kept_and_flagged(tmp_path):
 
 def test_subset_is_written_on_a_common_grid(tmp_path):
     path = _library(tmp_path, [
-        _record("Dry grass", "Emissivity", 7.5, 14.5),
+        _record("Dry grass", "Emissivity", 7.4, 14.0),
         _record("Charred wood", "Emissivity", 6.0, 15.0),
     ])
     kept, _ = select(parse_ecostress(path), EMISSIVITY)
@@ -154,7 +156,71 @@ def test_empty_subset_writes_a_well_formed_file(tmp_path):
     assert blob["wavelength_um"].size > 0
 
 
-def test_the_two_subsets_target_different_windows():
-    # The whole reason for two subsets: SAM needs SWIR, Eq. 5 needs LWIR, and
-    # no single spectrum is guaranteed to span both.
-    assert REFLECTANCE.coverage_um[1] <= EMISSIVITY.coverage_um[0]
+def test_configured_ranges_have_not_been_accidentally_overlapped():
+    # A CONFIG guard, nothing more. An earlier version of this test claimed it
+    # encoded "why one library cannot serve both", which is false twice over:
+    # the ranges are disjoint because they were configured that way, and many
+    # ECOSTRESS entries span 0.4-15 um continuously, so one entry genuinely can
+    # serve both. Worse, Kirchhoff's law makes emissivity and reflectance
+    # complementary (eps = 1 - R for an opaque surface), so asserting they must
+    # be disjoint stated the opposite of the physics -- and would have blocked a
+    # legitimate widening of the reflectance subset behind an authoritative-
+    # looking failure.
+    assert REFLECTANCE.coverage_um[1] <= EMISSIVITY.coverage_um[0], (
+        "The two subsets' ranges now overlap. That is not wrong in itself -- see "
+        "Kirchhoff's law in build_speclib's docstring -- but it is a change worth "
+        "making deliberately rather than by accident."
+    )
+
+
+def test_emissivity_coverage_matches_the_sensor_band_not_a_wider_window():
+    # Requiring 8-14 um would reject an entry measured over exactly 7.5-13.5 --
+    # FLAME 3's actual band per Fig. 3 -- for failing to supply wavelengths the
+    # camera never observes. Such an entry would appear in the dropped-for-
+    # coverage list, looking like a property of the library rather than a
+    # mistake in the filter.
+    assert EMISSIVITY.coverage_um == SENSOR_BAND_UM == (7.5, 13.5)
+
+
+def test_an_entry_spanning_exactly_the_sensor_band_is_kept(tmp_path):
+    path = _library(tmp_path, [_record("Dry grass", "Emissivity", 7.5, 13.5)])
+    kept, dropped = select(parse_ecostress(path), EMISSIVITY)
+    assert [s.name for s in kept] == ["Dry grass"]
+    assert dropped["insufficient_coverage"] == []
+
+
+# --------------------------------------------------------------------------
+# Missing materials -- the failure a bulk count hides
+# --------------------------------------------------------------------------
+
+
+def test_a_requested_material_with_no_entries_is_named(tmp_path):
+    # "kept 40 of 3000" says nothing about WHICH materials came back empty, and
+    # char is both the likeliest gap and the highest-value prior for a burned
+    # scene.
+    path = _library(tmp_path, [_record("Dry grass", "Emissivity", 7.5, 13.5)])
+    _, dropped = select(parse_ecostress(path), EMISSIVITY)
+    assert "char" in dropped["empty_keywords"]
+    assert "grass" not in dropped["empty_keywords"]
+
+
+def test_per_keyword_counts_are_reported(tmp_path):
+    path = _library(tmp_path, [
+        _record("Dry grass A", "Emissivity", 7.5, 13.5),
+        _record("Dry grass B", "Emissivity", 7.5, 13.5),
+    ])
+    _, dropped = select(parse_ecostress(path), EMISSIVITY)
+    assert dropped["per_keyword"]["grass"] == 2
+
+
+def test_char_fallback_forbids_vegetation():
+    # Green canopy (~0.98) against charred surfaces (~0.94-0.96) exceeds the
+    # 10 K within-class spread this work quotes, so silently reusing vegetation
+    # would put the substitution inside the error bar it is meant to respect.
+    note = fallback_note(["char"])[0]
+    assert "bark" in note and "wood" in note
+    assert "Do NOT fall back to vegetation" in note
+
+
+def test_a_material_without_a_documented_substitute_says_so():
+    assert "no documented substitute" in fallback_note(["kaolinite"])[0]

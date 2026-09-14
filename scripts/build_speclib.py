@@ -15,14 +15,35 @@ One download, two purposes, because M5 made a second subset load-bearing:
 The second subset is the point of doing this now: it turns the emissivity prior
 from a hardcoded constant into a cited measurement.
 
+The split is **pragmatic, not physical**: the two objectives need different
+wavelength ranges and different material sets, so two files are more convenient
+than one. It is not that a single spectrum could not serve both -- many
+ECOSTRESS entries span 0.4-15 um continuously, and Kirchhoff's law makes the two
+quantities complementary rather than independent (see below).
+
 **Coverage is checked per entry, at build time.** ``spectra_all.txt`` bundles
 the JHU, JPL and USGS sub-libraries, which do not share a wavelength grid or a
-sample convention -- many LWIR entries never reach SWIR and vice versa. Since
-:func:`sam.resample_to_grid` refuses to extrapolate (and should -- edge-clamping
-would invent flat spectral shape that SAM, being a shape comparison, reads as
-genuine similarity), an out-of-range entry would otherwise surface as a refusal
-in the middle of matching. Checking here converts that runtime surprise into a
-build-time report naming which entries were dropped and why.
+sample convention, so an individual entry may not span the range a subset needs.
+Since :func:`sam.resample_to_grid` refuses to extrapolate (and should --
+edge-clamping would invent flat spectral shape that SAM, being a shape
+comparison, reads as genuine similarity), an out-of-range entry would otherwise
+surface as a refusal in the middle of matching. Checking here converts that
+runtime surprise into a build-time report naming which entries were dropped and
+why.
+
+Kirchhoff's law, and why it is worth knowing here
+-------------------------------------------------
+For an opaque surface at thermal equilibrium::
+
+    epsilon(lambda) = 1 - R(lambda)
+
+so LWIR emissivity and LWIR reflectance are complementary measurements of the
+same physical property, not separate ones. That has a practical consequence for
+this script: **if the emissivity subset comes up short for a material, LWIR
+reflectance for that same material yields epsilon directly.** Char and ash are
+the likely gaps (see :data:`MATERIAL_FALLBACKS`), and an LWIR reflectance
+measurement of char is as good a source for its emissivity as a direct
+emissivity measurement would be.
 """
 
 from __future__ import annotations
@@ -79,11 +100,20 @@ REFLECTANCE = SubsetSpec(
     ],
 )
 
-#: LWIR emissivity for Eq. 5's prior. 8-14 um is the thermal camera's window.
+#: FLAME 3's thermal band, per the paper's Fig. 3. The coverage requirement is
+#: the SENSOR's band, deliberately not a wider nominal "LWIR" window: an entry
+#: measured over exactly 7.5-13.5 um covers everything this camera sees, and
+#: requiring 8-14 would reject it for failing to supply wavelengths no
+#: instrument here observes. Over-wide criteria do not fail loudly -- the entry
+#: just appears in the dropped-for-coverage list, which looks like a property of
+#: the library rather than a mistake in the filter.
+SENSOR_BAND_UM = (7.5, 13.5)
+
+#: LWIR emissivity for Eq. 5's prior.
 EMISSIVITY = SubsetSpec(
     name="emissivity_lwir",
     purpose="Objective 4 -- the epsilon prior for Eq. 5 retrieval",
-    coverage_um=(8.0, 14.0),
+    coverage_um=SENSOR_BAND_UM,
     spectrum_type="emissivity",
     keywords=["grass", "vegetation", "conifer", "deciduous", "leaf",
               "char", "ash", "soil", "sand", "bark", "wood"],
@@ -91,6 +121,42 @@ EMISSIVITY = SubsetSpec(
 )
 
 SUBSETS = [REFLECTANCE, EMISSIVITY]
+
+#: What to substitute when a requested emissivity material is not in the
+#: library, and the caveat that must travel with the substitution.
+#:
+#: **Char and ash are the expected gaps, and they are the entries that matter
+#: most.** Vegetation, grass, soil and bark are standard library material; char
+#: and ash are far less commonly measured, and a burned wildfire scene is mostly
+#: char. So the highest-value epsilon prior is the one most likely to come back
+#: empty.
+#:
+#: The fallback is bark or wood **with the caveat stated**, never a silent reuse
+#: of vegetation: green canopy sits near 0.98 while charred surfaces sit nearer
+#: 0.94-0.96, and at the ~10 K scale this work quotes that difference is not
+#: rounding.
+MATERIAL_FALLBACKS = {
+    "char": ("bark", "wood"),
+    "ash": ("soil", "bark"),
+}
+
+
+def fallback_note(missing: list[str]) -> list[str]:
+    """Advice lines for requested materials the library did not supply."""
+    notes = []
+    for name in missing:
+        options = MATERIAL_FALLBACKS.get(name)
+        if options:
+            notes.append(
+                f"{name!r} absent -- substitute {' or '.join(repr(o) for o in options)} "
+                f"and state the substitution alongside any temperature derived from it. "
+                f"Do NOT fall back to vegetation: green canopy (~0.98) differs from "
+                f"charred surfaces (~0.94-0.96) by more than the 10 K within-class "
+                f"spread this work quotes."
+            )
+        else:
+            notes.append(f"{name!r} absent -- no documented substitute; widen the keywords.")
+    return notes
 
 
 # --------------------------------------------------------------------------
@@ -191,6 +257,10 @@ def select(spectra: list[Spectrum], spec: SubsetSpec) -> tuple[list[Spectrum], d
 
     kept: list[Spectrum] = []
     dropped = {"wrong_type": 0, "no_keyword": 0, "insufficient_coverage": []}
+    # Per-requested-material counts. A keyword that matches nothing is the
+    # failure that matters and the one a bulk "kept N of M" line hides --
+    # see MATERIAL_FALLBACKS for why char and ash are the likely cases.
+    per_keyword = {k: 0 for k, _ in terms}
 
     for s in spectra:
         text = _haystack(s)
@@ -213,8 +283,11 @@ def select(spectra: list[Spectrum], spec: SubsetSpec) -> tuple[list[Spectrum], d
         s.metadata["_is_counterexample"] = str(
             any(k == match for k in spec.counterexamples)
         ).lower()
+        per_keyword[match] += 1
         kept.append(s)
 
+    dropped["per_keyword"] = per_keyword
+    dropped["empty_keywords"] = sorted(k for k, n in per_keyword.items() if n == 0)
     return kept, dropped
 
 
@@ -270,6 +343,10 @@ def main(argv=None) -> int:
         print(f"  dropped, type     : {dropped['wrong_type']:,}")
         print(f"  dropped, keyword  : {dropped['no_keyword']:,}")
         print(f"  dropped, coverage : {len(dropped['insufficient_coverage'])}")
+        if dropped["empty_keywords"]:
+            print(f"  MATERIALS WITH NO ENTRIES: {', '.join(dropped['empty_keywords'])}")
+            for note in fallback_note(dropped["empty_keywords"]):
+                print(f"      ! {note}")
         for entry in dropped["insufficient_coverage"][:5]:
             print(f"      {entry['name'][:52]:<52} {entry['coverage_um']} um")
         if len(dropped["insufficient_coverage"]) > 5:

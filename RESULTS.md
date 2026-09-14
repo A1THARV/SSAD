@@ -745,8 +745,32 @@ right costs ~10 K of uncertainty. Getting it wrong costs ~300 K.
 
 **ε comes from a scene-level material prior.** A wildfire scene is vegetation,
 grass, char and soil — not steel. That prior is available without any material
-identification at all, and it bounds the error at ~10 K, which is the useful
-claim.
+identification at all, and it bounds the error at ~10 K.
+
+### Sufficient for what, exactly
+
+"~10 K" means nothing without the task it is measured against, and it is
+sufficient for some and not others:
+
+| framing | value |
+|---|---|
+| spread, absolute | 10.2 K |
+| relative, in kelvin — the physical figure | **2.07 %** |
+| relative, in Celsius | 4.64 % |
+| propagated to **radiative power** (∝ T⁴) | **8.54 %** |
+
+* **Sufficient for combustion-regime discrimination.** Smouldering (~300 °C) and
+  flaming (~800 °C) sit 8× and 57× the spread away from the 220 °C retrieval
+  here. Nothing about that separation is threatened by 10 K.
+* **Not negligible for fire radiative power.** FRP goes as T⁴, so 2.07 % in
+  temperature becomes **8.54 %** in radiated power — and FRP is a standard
+  derived product, so anyone taking these temperatures downstream inherits that
+  without it being obvious.
+
+The Celsius row is included only because it is the number a reader is likely to
+compute by eye, and it reads more than twice as large as the physically
+meaningful one. Radiative quantities are defined on absolute temperature, so
+2.07 % is the figure that propagates.
 
 Full material identification (Objective 2) **upgrades** that prior where
 co-registered hyperspectral imagery exists. It is not a precondition, and
@@ -775,6 +799,12 @@ cannot reach.
 
 ### What is reported, and what is refused
 
+* **A missing ε has a second source.** Kirchhoff's law gives ε(λ) = 1 − R(λ)
+  for an opaque surface at thermal equilibrium, so an LWIR *reflectance*
+  measurement of a material yields its emissivity directly. That matters because
+  char and ash — the materials a burned scene is mostly made of — are the least
+  commonly measured emissivity entries, and are the likeliest gaps in any
+  library subset.
 * **The mode is named:** `assumed-emissivity (single-band)`. Single-band data
   cannot separate temperature from emissivity — that needs multiple bands — so
   the assumption is unavoidable here and is labelled rather than hidden.
