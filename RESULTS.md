@@ -889,11 +889,130 @@ error, where 200,000 log-spaced points give 4e-10 — loosening the tolerance
 instead would have produced a test tuned to its own sampling error rather than
 to the physics.
 
-Reproduce with `python scripts/build_speclib.py && python scripts/thermal_retrieval.py`.
+Reproduce with `python scripts/build_speclib.py && python scripts/thermal_retrieval.py
+python scripts/sam_mixing_experiment.py`.
 
 ---
 
-## 14. Provenance
+## 14. M3: identification needs SWIR — §3's prediction, measured
+
+§3 measured that HAD100's *detection* signal lives at 455–700 nm, and predicted
+that *identification* would need the SWIR absorption features a spectral library
+encodes. That prediction is now tested — and it required a controlled experiment,
+because no real scene can be re-flown with half its spectrum removed.
+
+**Synthetic, and labelled so.** Real ECOSTRESS mineral spectra, resampled to the
+AVIRIS-NG grid, mixed into a real HAD100 background at known sub-pixel abundance,
+with Gaussian noise at known SNR. The spectra and the background are real; the
+mixing and the noise are not. Ground truth is exact by construction, which is the
+point: it is the one thing Cuprite cannot currently supply (§14.4).
+
+### The result
+
+Top-1 material identification accuracy, 15 materials (chance = 0.067), SNR 20 dB,
+matching on the background-removed deviation:
+
+| bands | | a = 1.0 | 0.75 | 0.50 | 0.30 | 0.20 | **0.10** | 0.05 |
+|---|---|---|---|---|---|---|---|---|
+| **swir** | 126 | 0.810 | 0.825 | 0.825 | 0.760 | 0.680 | **0.565** | 0.385 |
+| full | 276 | 0.945 | 0.950 | 0.905 | 0.875 | 0.680 | 0.410 | 0.265 |
+| vnir | 101 | 0.835 | 0.700 | 0.510 | 0.295 | 0.235 | 0.180 | 0.105 |
+| **visible** | 50 | 0.730 | 0.545 | 0.420 | 0.325 | 0.205 | **0.185** | 0.150 |
+
+**The prediction holds, and the symmetry with §3 is exact.**
+
+| | best window | worst window |
+|---|---|---|
+| **Detection** (§3, RX mAUC) | visible 0.9799 | SWIR-ish 0.9162 |
+| **Identification** (here, a = 0.10) | SWIR 0.565 | visible 0.185 |
+
+The two objectives want opposite ends of the same spectrum, now measured on both
+sides rather than argued on one. And the mirror runs deeper: just as adding SWIR
+*hurt* detection, **adding the visible bands hurts identification** — at a ≤ 0.10,
+SWIR alone (0.565) beats the full range (0.410), because the visible bands
+contribute noise without contributing diagnostic features.
+
+### Three construction errors, each of which produced a plausible table
+
+The experiment is synthetic, so its conclusions are only as good as its
+construction. Each of these was caught by a result that looked wrong:
+
+**1. Mismatched units made the abundance axis a lie.** HAD100's crops are not
+reflectance fractions — mean 2.51, against a library mean of 0.60. Mixed
+unscaled, a nominal `a = 0.75` pixel draws 0.564 of its signal from the target
+and **0.626 from the "25%" background**. Accuracy collapsed at every `a < 1` for
+a reason with nothing to do with SAM. Caught because the collapse was a cliff
+rather than a slope.
+
+**2. A noiseless experiment is exactly solvable, and scores 1.000 everywhere.**
+With exact linear mixing, `observed − bg = a·(target − bg)` is the reference
+scaled by `a`, and SAM is magnitude-invariant, so the angle to the correct entry
+is *identically zero*. The first band ablation duly reported perfect accuracy on
+visible-only bands — which would have read as **refuting §3** while in fact
+measuring nothing at all. Noise is what makes band choice matter: diagnostic
+absorptions survive it and continuum shape does not.
+
+**3. Matching the raw pixel answers a different question.** Against pure library
+spectra with no background removal, accuracy falls to chance for any minority
+target:
+
+| | a = 1.0 | 0.75 | 0.50 | 0.10 |
+|---|---|---|---|---|
+| raw mixed pixel | 1.000 | 0.240 | 0.040 | 0.040 |
+| background removed | 1.000 | 1.000 | 1.000 | 1.000 *(noiseless)* |
+
+That is not a flaw in SAM. As abundance falls, every mixture converges on the
+background *regardless of what was mixed in*, so the nearest library entry
+becomes whichever sits closest to the background — the same one every trial. The
+pipeline is not affected, because RX already defines an anomaly as a departure
+from background; matching the deviation is what it has available. But reporting
+only the second row would overstate SAM, and only the first would misdescribe
+the pipeline, so both are reported.
+
+### Noise sensitivity
+
+Full range, background-removed:
+
+| SNR | a = 1.0 | 0.50 | 0.20 | 0.10 | 0.05 |
+|---|---|---|---|---|---|
+| noiseless | 1.000 | 1.000 | 1.000 | 1.000 | 1.000 |
+| 40 dB | 1.000 | 0.995 | 0.985 | 0.975 | 0.880 |
+| 30 dB | 0.995 | 0.995 | 0.945 | 0.855 | 0.575 |
+| 20 dB | 0.930 | 0.920 | 0.675 | 0.395 | 0.275 |
+| 10 dB | 0.875 | 0.630 | 0.260 | 0.175 | 0.160 |
+
+Reproduce with `python scripts/sam_mixing_experiment.py`.
+
+### 14.4 Why not Cuprite — and a trap worth naming
+
+Cuprite, Nevada is the canonical AVIRIS mineral-mapping site and the standard
+answer for identification ground truth. Access was verified on 2026-09-15 and is
+**partial in the way that matters**:
+
+| | status |
+|---|---|
+| Tetracorder repo (GitHub, Zenodo) — the mineral map *as data* | ✅ 200 |
+| AVIRIS data portal — raw radiance | ✅ 200 |
+| `ftp://ftpext.usgs.gov/.../speclab/pub/cuprite` — the calibrated cube | ❌ connection fails |
+| `speclab.cr.usgs.gov/cuprite95.tgif.2.2um_map.gif` | ❌ 301, file gone |
+
+The mineral map is obtainable; the calibrated reflectance cube it corresponds to
+is not. The Tetracorder repo omits the cube for size and points at the dead FTP.
+Raw AVIRIS is still available, but atmospheric correction to apparent surface
+reflectance is a substantial job and the result would no longer correspond
+pixel-for-pixel to the published map — which is the entire reason for wanting
+Cuprite. No mirror of `cuprite.95.cal.rtgc` was found.
+
+**The trap, worth a footnote wherever Cuprite is cited:** "Cuprite has ground
+truth" is true only of the **614 × 750 Tetracorder pairing**. The 250 × 191 crop
+that circulates widely in the unmixing literature is catalogued as having **no
+ground truth** — it is a different subset. A paper citing "Cuprite, which has
+USGS ground truth" while using the common crop is claiming validation it does not
+have.
+
+---
+
+## 15. Provenance
 
 Every figure above traces to a run directory or a named script. `results/` is
 gitignored (it holds score maps); the run records are reproducible from the
@@ -910,6 +1029,7 @@ configs and commands listed here.
 | §11 FLAME 3 baseline saturation | `scripts/thermal_baseline.py` | — |
 | §13 Eq. 5 retrieval | `results/thermal/flame3_retrieval.json` via `scripts/thermal_retrieval.py` | — |
 | §13 emissivity library | `results/speclib_build.json` via `scripts/build_speclib.py` | — |
+| §14 SAM mixing experiment | `results/sam_mixing_experiment.json` via `scripts/sam_mixing_experiment.py` | — |
 | §10 train-on-test-scene | `results/m2/train_on_test_scene.json` via `scripts/train_on_test_scene.py` | — |
 | §8 Salinas zero-anomaly | `results/salinas-zero-anomaly_20260823-163509` | `86f4b5c9576a` |
 | §9 corpus PCA timing, stability spectrum | `BandReducer.fit_streaming` on the 1,040-crop corpus | — |

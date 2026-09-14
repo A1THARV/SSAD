@@ -475,6 +475,14 @@ def write_subset(kept: list[Spectrum], spec: SubsetSpec, out_dir: Path) -> Path:
         spectra=stacked,
         names=np.array([s.name for s in kept], dtype=object),
         source_files=np.array([s.source_file for s in kept], dtype=object),
+        # The MATERIAL CLASS each entry was matched on. Identification accuracy
+        # has to be scored against this rather than against a spectrum index --
+        # the subset holds 51 quartz entries, and asking a matcher to pick the
+        # one correct quartz out of 51 measures sample recall, not material
+        # identification, which is what Objective 2 claims.
+        material=np.array(
+            [s.metadata.get("_matched_keyword", "") for s in kept], dtype=object
+        ),
         counterexample=np.array(
             [s.metadata.get("_is_counterexample", "false") == "true" for s in kept]
         ),

@@ -1,0 +1,339 @@
+"""M3 primary: controlled sub-pixel mixing, with exact identification ground truth.
+
+    python scripts/sam_mixing_experiment.py
+
+Objective 2 has to demonstrate two things: that SAM identifies what an anomaly is
+made of, and -- per RESULTS.md §3 -- that it needs SWIR to do it. A real scene
+gives one accuracy figure confounded by that scene's mineralogy and its
+atmospheric correction. This gives the mechanism instead, and the ground truth is
+**exact by construction**:
+
+1. Take a real ECOSTRESS mineral spectrum from ``reflectance_swir.npz``.
+2. Resample it to the AVIRIS-NG sensor grid (:func:`sam.resample_to_grid`, which
+   refuses to extrapolate).
+3. Mix it into a **real** HAD100 background spectrum at a known sub-pixel
+   abundance: ``pixel = a*target + (1-a)*background``.
+4. Add Gaussian noise at a known SNR.
+5. Run SAM against the whole library and record whether the top-1 match is the
+   right **material**.
+
+The band-subset axis is the point. §3 measured that HAD100's *detection* signal
+lives at 455-700 nm and predicted that *identification* needs the SWIR absorption
+features a library encodes. Running the same experiment on a visible-only subset
+against the full range turns that prediction into a measurement -- and it is a
+measurement no real scene can supply, because a scene cannot be re-flown with
+half its spectrum removed.
+
+**This is synthetic, and is labelled synthetic everywhere it is reported.** The
+spectra and the background are real; the mixing and the noise are not. That is
+standard practice in the unmixing and SAM literature precisely because material
+ground truth is otherwise unobtainable -- see RESULTS.md §14 for why Cuprite, the
+usual answer, is currently half-unavailable.
+
+Scoring is by MATERIAL, not by spectrum index: the library holds 51 quartz
+entries, and asking a matcher to pick the one correct quartz out of 51 would
+measure sample recall rather than material identification.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from dataclasses import dataclass
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
+from pipeline.runtime import configure_openmp  # noqa: E402
+
+configure_openmp()
+
+import numpy as np  # noqa: E402
+
+from pipeline.errors import DataUnavailableError  # noqa: E402
+from pipeline.hyperspectral.band_presets import BAND_PRESETS  # noqa: E402
+from pipeline.hyperspectral.sam import (  # noqa: E402
+    resample_to_grid,
+    spectral_angle_batch,
+)
+
+CURATED = Path("data/speclib/curated/reflectance_swir.npz")
+CORPUS = Path("data/hyperspectral/had100/HAD100Dataset/train/aviris_ng")
+CORPUS_ALT = Path("data/hyperspectral/had100/HAD100/HAD100Dataset/train/aviris_ng")
+
+#: AVIRIS-NG: 425 channels from 380 nm at ~5 nm spacing. HAD100 keeps a subset,
+#: and these are the wavelengths of the bands its .npy crops actually carry.
+AVIRIS_NG_START_NM = 380.0
+AVIRIS_NG_STEP_NM = 5.0
+
+
+def sensor_wavelengths_nm() -> np.ndarray:
+    """Wavelengths of the 276 bands HAD100's AVIRIS-NG crops carry."""
+    keep = BAND_PRESETS["had100_aviris_ng"]
+    return AVIRIS_NG_START_NM + np.asarray(keep, dtype=np.float64) * AVIRIS_NG_STEP_NM
+
+
+@dataclass(frozen=True)
+class BandSubset:
+    """A contiguous slice of the sensor's bands, and why it is interesting."""
+
+    name: str
+    lo_nm: float
+    hi_nm: float
+    rationale: str
+
+    def mask(self, wavelengths: np.ndarray) -> np.ndarray:
+        return (wavelengths >= self.lo_nm) & (wavelengths <= self.hi_nm)
+
+
+#: The ablation §3 has been promising. `visible` is the window HAD100's
+#: *detection* signal lives in; `swir` holds the absorption features a spectral
+#: library encodes; `full` is everything.
+BAND_SUBSETS = [
+    BandSubset("full", 0.0, 1e9, "every band the sensor keeps (455-2410 nm)"),
+    BandSubset("visible", 400.0, 700.0,
+               "where §3 measured HAD100's detection signal to live"),
+    BandSubset("vnir", 400.0, 1000.0, "visible plus near-IR, no SWIR"),
+    BandSubset("swir", 1500.0, 2450.0,
+               "OH/carbonate/sulfate absorptions -- what a library identifies on"),
+]
+
+ABUNDANCES = (1.0, 0.75, 0.5, 0.3, 0.2, 0.1, 0.05)
+SNRS_DB = (np.inf, 40.0, 30.0, 20.0, 10.0)
+
+#: SNRs the band-subset ablation runs at. Noiseless is deliberately excluded --
+#: see the comment at the ablation itself.
+ABLATION_SNRS_DB = (20.0, 10.0)
+
+
+def load_library(path: Path = CURATED):
+    if not path.is_file():
+        raise DataUnavailableError(
+            reason="Curated SWIR reflectance subset not found",
+            path=path,
+            remedy="python scripts/build_speclib.py",
+        )
+    blob = np.load(path, allow_pickle=True)
+    return (
+        blob["wavelength_um"] * 1000.0,           # nm
+        blob["spectra"],
+        np.array([str(m) for m in blob["material"]]),
+        np.array([str(n) for n in blob["names"]]),
+    )
+
+
+def background_spectrum(
+    sensor_nm: np.ndarray, target_mean: float = 1.0, seed: int = 0
+) -> np.ndarray:
+    """Mean spectrum of the HAD100 anomaly-free corpus, rescaled to match units.
+
+    A real background from the real sensor, so the mixture is synthetic only in
+    the mixing -- not in what is being mixed into. Falls back to a smooth
+    synthetic continuum if the corpus is absent, flagged by the returned
+    ``is_real`` so the report cannot quietly claim otherwise.
+
+    **The rescaling is required, not cosmetic.** HAD100's AVIRIS-NG crops are not
+    reflectance fractions: they span 0.058-7.19 with a mean of 2.51, against a
+    library mean of 0.60. Mixed unscaled, a nominal ``a = 0.75`` pixel takes
+    0.564 of its signal from the target and 0.626 from the "25%" background --
+    so the abundance axis would be labelled with numbers that are not the
+    fractions they claim to be, and identification accuracy would collapse at
+    every a < 1 for a reason that has nothing to do with SAM.
+
+    Scaling the background to the library's mean makes ``a`` mean what it says:
+    the fraction of the pixel's signal contributed by the target. The spectral
+    *shape* -- the only thing SAM sees -- is untouched.
+    """
+    for root in (CORPUS, CORPUS_ALT):
+        if root.is_dir():
+            paths = sorted(root.glob("*.npy"))[:40]
+            if paths:
+                stack = [np.asarray(np.load(p, mmap_mode="r"), dtype=np.float64)
+                         .reshape(-1, len(sensor_nm)).mean(axis=0) for p in paths]
+                mean = np.mean(stack, axis=0)
+                if np.all(np.isfinite(mean)) and mean.min() > 0:
+                    return mean * (target_mean / float(mean.mean())), True
+    rng = np.random.default_rng(seed)
+    synthetic = 0.25 + 0.05 * np.sin(sensor_nm / 400.0) + rng.normal(0, 0.002, sensor_nm.size)
+    return np.clip(synthetic, 1e-3, None), False
+
+
+def add_noise(spectrum: np.ndarray, snr_db: float, rng) -> np.ndarray:
+    """Additive Gaussian noise at a stated SNR, defined on signal power."""
+    if not np.isfinite(snr_db):
+        return spectrum
+    signal_power = float(np.mean(spectrum**2))
+    noise_power = signal_power / (10.0 ** (snr_db / 10.0))
+    return spectrum + rng.normal(0.0, np.sqrt(noise_power), spectrum.shape)
+
+
+def run(
+    library_nm, library, materials, sensor_nm, background, subset, abundance,
+    snr_db, n_trials, rng, remove_background: bool = True, resampled=None,
+):
+    """Top-1 material identification accuracy for one experimental cell.
+
+    ``remove_background`` selects between the two things "run SAM on an anomaly"
+    can mean, and they behave completely differently:
+
+    * **False** -- match the raw mixed pixel against pure library spectra. This
+      fails by construction for any minority target. As ``a`` falls, every
+      mixture converges on the background *regardless of what was mixed in*, so
+      the nearest library entry becomes whichever one happens to sit closest to
+      the background, the same one every trial. It is not a flaw in SAM; it is
+      what a spectral angle measures.
+    * **True** -- match the *deviation* from background, on both sides:
+      ``observed - bg`` against ``library_i - bg``. This is what the pipeline
+      actually has available, because RX defines an anomaly as a departure from
+      background in the first place, and it is what makes sub-pixel
+      identification possible at all.
+
+    The pair is the experiment. Reporting only the second would overstate SAM;
+    reporting only the first would understate it and misdescribe the pipeline.
+    """
+    mask = subset.mask(sensor_nm)
+    if mask.sum() < 2:
+        return None
+
+    if resampled is None:
+        resampled = np.vstack(
+            [resample_to_grid(library[i], library_nm, sensor_nm)
+             for i in range(library.shape[0])]
+        )
+    ref = resampled[:, mask]
+    bg = background[mask]
+    if remove_background:
+        ref = ref - bg
+
+    hits = 0
+    for _ in range(n_trials):
+        idx = int(rng.integers(library.shape[0]))
+        target = resampled[idx][mask]
+        mixed = abundance * target + (1.0 - abundance) * bg
+        observed = add_noise(mixed, snr_db, rng)
+        if remove_background:
+            observed = observed - bg
+        if not np.all(np.isfinite(observed)) or np.linalg.norm(observed) == 0:
+            continue
+        angles = spectral_angle_batch(observed, ref)[0]
+        hits += int(materials[int(np.argmin(angles))] == materials[idx])
+    return hits / n_trials
+
+
+def resample_library(library, library_nm, sensor_nm):
+    """Resample every library spectrum onto the sensor grid, once."""
+    return np.vstack(
+        [resample_to_grid(library[i], library_nm, sensor_nm)
+         for i in range(library.shape[0])]
+    )
+
+
+def main(argv=None) -> int:
+    p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    p.add_argument("--out", default="results/sam_mixing_experiment.json")
+    p.add_argument("--trials", type=int, default=200)
+    p.add_argument("--seed", type=int, default=0)
+    args = p.parse_args(argv)
+
+    library_nm, library, materials, _ = load_library()
+    sensor_nm = sensor_wavelengths_nm()
+    background, real_background = background_spectrum(
+        sensor_nm, target_mean=float(library.mean())
+    )
+
+    print(f"library : {library.shape[0]} spectra, {len(set(materials))} materials, "
+          f"{library_nm[0]:.0f}-{library_nm[-1]:.0f} nm")
+    print(f"sensor  : {sensor_nm.size} bands, {sensor_nm[0]:.0f}-{sensor_nm[-1]:.0f} nm")
+    print(f"backgrnd: {'real HAD100 corpus mean' if real_background else 'SYNTHETIC continuum'}"
+          f", rescaled to the library's mean ({library.mean():.3f}) so that abundance "
+          f"means signal fraction")
+    print(f"trials  : {args.trials} per cell\n")
+
+    rng = np.random.default_rng(args.seed)
+    resampled = resample_library(library, library_nm, sensor_nm)
+    report = {
+        "synthetic": True,
+        "trials_per_cell": args.trials,
+        "n_library_spectra": int(library.shape[0]),
+        "n_materials": len(set(materials)),
+        "real_background": bool(real_background),
+        "abundances": list(ABUNDANCES),
+        "snr_db": [None if not np.isfinite(s) else s for s in SNRS_DB],
+        "band_subsets": {b.name: {"lo_nm": b.lo_nm, "hi_nm": b.hi_nm,
+                                  "rationale": b.rationale} for b in BAND_SUBSETS},
+        "accuracy": {},
+    }
+
+    def table(title, key, rows, fn):
+        print(f"\n{title}")
+        print("  " + " " * 12 + "".join(f"{a:>8.2f}" for a in ABUNDANCES)
+              + "    <- target abundance")
+        for label, kwargs in rows:
+            row = [fn(kwargs, a) for a in ABUNDANCES]
+            for a, v in zip(ABUNDANCES, row):
+                report["accuracy"].setdefault(key, {})[f"{label}|a={a}"] = v
+            print(f"  {label:<12}" + "".join(f"{v:>8.3f}" for v in row))
+
+    full = BAND_SUBSETS[0]
+
+    # --- The two meanings of "run SAM on an anomaly" ------------------------
+    table(
+        "Raw mixed pixel against pure library spectra (no background removal)",
+        "raw",
+        [("full range", {"subset": full, "remove_background": False})],
+        lambda kw, a: run(library_nm, library, materials, sensor_nm, background,
+                          kw["subset"], a, np.inf, args.trials, rng,
+                          remove_background=False, resampled=resampled),
+    )
+
+    # --- The headline ablation, on the pipeline's actual formulation --------
+    #
+    # Run UNDER NOISE, and that is not a detail. Noiseless, this experiment is
+    # exactly solvable: observed - bg = a*(target - bg) is the reference scaled
+    # by a, and SAM is magnitude-invariant, so the angle to the correct entry is
+    # identically zero and every band subset scores 1.000. A noiseless ablation
+    # would have reported perfect accuracy on visible-only bands and appeared to
+    # REFUTE §3, when in fact it measured nothing at all.
+    #
+    # Noise is what makes band choice matter: it is the diagnostic absorption
+    # features that survive it, and a subset lacking them has only continuum
+    # shape to match on.
+    for snr in ABLATION_SNRS_DB:
+        table(
+            f"Background-removed matching by band subset, SNR {snr:.0f} dB"
+            "  [the §3 ablation]",
+            f"band_subset_snr{snr:.0f}",
+            [(b.name, {"subset": b}) for b in BAND_SUBSETS],
+            lambda kw, a, _snr=snr: run(
+                library_nm, library, materials, sensor_nm, background,
+                kw["subset"], a, _snr, args.trials, rng,
+                remove_background=True, resampled=resampled),
+        )
+    for b in BAND_SUBSETS:
+        report["band_subsets"][b.name]["n_bands"] = int(b.mask(sensor_nm).sum())
+
+    # --- Noise sensitivity, full range, background removed ------------------
+    table(
+        "Background-removed matching versus SNR, full range",
+        "snr",
+        [("noiseless" if not np.isfinite(s) else f"{s:.0f} dB", {"snr": s})
+         for s in SNRS_DB],
+        lambda kw, a: run(library_nm, library, materials, sensor_nm, background,
+                          full, a, kw["snr"], args.trials, rng,
+                          remove_background=True, resampled=resampled),
+    )
+
+    chance = 1.0 / len(set(materials))
+    report["chance_accuracy"] = chance
+    print(f"\nchance accuracy with {len(set(materials))} materials: {chance:.3f}")
+
+    out = Path(args.out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    print(f"written to {out}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
