@@ -985,35 +985,79 @@ rather than a selection, but recorded for the same reason.
 error is about 0.03, so 0.180 against 0.140 is well inside noise. The finding is
 that both collapse, not that one collapses further.
 
-### Against a realistic library: measured, not extrapolated
+### Against a realistic library, a realistic SNR, and at two granularities
 
-The 15-material subset is a controlled setting. Rather than bound its optimism
-with a caveat, the experiment was rerun against **every mineral and rock
-reflectance spectrum in ECOSTRESS with full SWIR coverage — 1,206 spectra across
-253 species**, labelled by species:
+Three limitations of the controlled setting, each replaced with a measurement
+rather than a caveat.
 
-| reference library | chance | a = 1.0 | 0.50 | 0.30 | 0.20 | 0.10 | 0.05 |
-|---|---|---|---|---|---|---|---|
-| 5 materials | 0.200 | 0.996 | 0.984 | 0.908 | 0.876 | 0.636 | 0.488 |
-| 10 materials | 0.100 | 0.992 | 0.988 | 0.936 | 0.872 | 0.528 | 0.340 |
-| 15 materials | 0.067 | 0.980 | 0.956 | 0.872 | 0.684 | 0.412 | 0.204 |
-| **253 species** | **0.0040** | **0.964** | **0.780** | **0.592** | **0.364** | **0.152** | **0.048** |
+**Library size.** The curated subset is **238 spectra across 15 keyword-matched
+materials** — the two numbers count different things and both appear because
+neither alone describes it. The realistic arm uses every mineral and rock
+reflectance spectrum in ECOSTRESS with full SWIR coverage: **1,206 spectra across
+253 species**.
 
-**This is the number Objective 2 should be reported on, and it is not flattering.**
-At a realistic library size, identification is strong for a resolved target
-(0.964 at a = 1.0, 0.780 at a = 0.50) and **weak sub-pixel**: 0.152 at a = 0.10,
-0.048 at a = 0.05.
+**Sensor SNR.** The controlled runs apply the same SNR to every band, which is
+the assumption that **favours SWIR**: a real imaging spectrometer peaks in the
+visible/NIR and declines through SWIR, with deep troughs where atmospheric water
+vapour absorbs near 1400 and 1900 nm. The `AVIRIS SNR` rows apply a
+wavelength-dependent profile shaped that way, with the nominal 20 dB now meaning
+20 dB *at the peak*.
 
-Two things keep it from being a null result. It remains far above chance
-throughout — 241× at a = 1.0, still **38× at a = 0.10** and 12× at a = 0.05 — so
-SAM is extracting real information at every abundance. And the degradation is
-orderly rather than a collapse, which is what makes the abundance curve
-informative about when identification can be trusted.
+**Granularity.** Top-1 species accuracy scores "alunite called natroalunite" and
+"sulfate called silicate" identically, and they are not equivalent errors — the
+same distinction as Objective 4's within-class 4.4 K against across-class 656 K.
+Families come from ECOSTRESS's own `Class` field (16 of them: silicate,
+carbonate, sulfate, oxide, sulfide, …), so the taxonomy is the library's rather
+than one imposed here.
 
-The honest summary for the paper: **SAM identifies a resolved or
-majority-abundance anomaly reliably against a 253-species library, and degrades
-to weak-but-well-above-chance for sub-pixel targets.** Quoting the 15-material
-figure without this would overstate it by a factor of 2.7 at a = 0.10.
+Full range, nominal 20 dB, 253 species / 16 families:
+
+| arm | chance | a = 1.0 | 0.75 | 0.50 | 0.30 | 0.20 | 0.10 | 0.05 |
+|---|---|---|---|---|---|---|---|---|
+| species, uniform SNR | 0.0040 | 0.964 | 0.896 | 0.780 | 0.592 | 0.364 | 0.152 | 0.048 |
+| **species, AVIRIS SNR** | 0.0040 | **0.904** | **0.748** | **0.576** | **0.372** | **0.184** | **0.068** | **0.024** |
+| family, uniform SNR | 0.0625 | 0.952 | 0.916 | 0.888 | 0.700 | 0.540 | 0.312 | 0.176 |
+| **family, AVIRIS SNR** | 0.0625 | **0.936** | **0.832** | **0.748** | **0.484** | **0.324** | **0.204** | **0.096** |
+
+**The bottom two rows are the ones Objective 2 should be reported on** — realistic
+library, realistic SNR — and they say two different useful things:
+
+* **Species identification degrades steeply with abundance**: 0.904 resolved,
+  0.576 at half a pixel, 0.068 at a tenth. Still 17× chance at a = 0.10, so real
+  information is present, but not a number to act on alone.
+* **Family identification holds up roughly three times better sub-pixel**: 0.204
+  against 0.068 at a = 0.10. A system that answers *"some sulfate"* for a
+  tenth-of-a-pixel target is right one time in five and useful; the same system
+  naming a species is right one time in fifteen.
+
+The chance-relative picture inverts, and both framings belong in the paper:
+species identification is 17× chance at a = 0.10 while family is 3.3×, because
+there are 253 species and 16 families. Species is the harder problem and the more
+impressive ratio; family is the more usable answer.
+
+### The SWIR advantage survives a realistic SNR profile
+
+The concern that uniform noise manufactured the result is testable, and it does
+not:
+
+| | a = 0.30 | 0.20 | 0.10 | 0.05 |
+|---|---|---|---|---|
+| **uniform SNR** — full | 0.872 | 0.684 | 0.412 | 0.204 |
+| **uniform SNR** — swir | 0.764 | **0.744** | **0.580** | **0.388** |
+| **AVIRIS SNR** — full | 0.600 | 0.412 | 0.204 | **0.180** |
+| **AVIRIS SNR** — swir | 0.544 | **0.512** | **0.376** | 0.156 |
+
+The crossover stays near a ≈ 0.20 and SWIR's *relative* advantage at a = 0.10
+actually widens slightly (1.41× → 1.84×). What the realistic profile does is
+lower everything: SWIR-only at a = 0.10 falls from 0.580 to 0.376.
+
+So the finding is not an artefact of the noise model — **but the uniform-SNR
+numbers are an upper bound on absolute performance**, and the wavelength-weighted
+rows are the ones to quote. Two caveats remain on the profile itself: it is a
+shape fitted to published AVIRIS behaviour rather than a calibration of a
+specific instrument, and it is applied to a *synthetic* mixture. §3's detection
+result needs no such correction, having been measured on real AVIRIS data where
+the instrument's SNR penalty was already present.
 
 ### Three construction errors, each of which produced a plausible table
 

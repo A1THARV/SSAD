@@ -149,7 +149,7 @@ def load_full_mineral_library(root: Path = ECOSTRESS, target_nm=None):
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     from build_speclib import classify_measurement, load_library as _load
 
-    spectra, names = [], []
+    spectra, names, families = [], [], []
     for sp in _load(root):
         if classify_measurement(sp.metadata) != "reflectance":
             continue
@@ -162,6 +162,10 @@ def load_full_mineral_library(root: Path = ECOSTRESS, target_nm=None):
             continue
         spectra.append(sp)
         names.append(label.split()[0].strip(".,"))
+        # ECOSTRESS's own mineralogical grouping -- Silicate, Carbonate,
+        # Sulfate, Oxide and so on, plus rock classes for rock samples. No hand
+        # mapping required, and no chance of imposing a taxonomy of our own.
+        families.append((sp.metadata.get("Class") or "unknown").strip().lower())
     if not spectra:
         return None
 
@@ -169,7 +173,7 @@ def load_full_mineral_library(root: Path = ECOSTRESS, target_nm=None):
     stacked = np.vstack([
         np.interp(grid, sp.wavelength_um * 1000.0, sp.value) for sp in spectra
     ])
-    return grid, stacked, np.array(names)
+    return grid, stacked, np.array(names), np.array(families)
 
 
 def background_spectrum(
@@ -208,13 +212,50 @@ def background_spectrum(
     return np.clip(synthetic, 1e-3, None), False
 
 
-def add_noise(spectrum: np.ndarray, snr_db: float, rng) -> np.ndarray:
-    """Additive Gaussian noise at a stated SNR, defined on signal power."""
+#: Relative SNR against wavelength for an AVIRIS-class imaging spectrometer,
+#: as (nm, relative SNR) anchors. Uniform noise across bands is the generous
+#: assumption for SWIR: a real instrument peaks in the visible/NIR and declines
+#: through SWIR, with deep troughs where atmospheric water vapour absorbs at
+#: ~1400 nm and ~1900 nm and almost no photons return.
+#:
+#: Shape only -- the absolute level is set by the run's nominal SNR, so a
+#: "20 dB" run means 20 dB *at the peak* and less elsewhere.
+AVIRIS_SNR_PROFILE = (
+    (400.0, 0.55), (500.0, 0.95), (700.0, 1.00), (900.0, 0.95),
+    (1100.0, 0.85), (1300.0, 0.70),
+    (1400.0, 0.08),    # water vapour
+    (1500.0, 0.55), (1700.0, 0.60), (1800.0, 0.50),
+    (1900.0, 0.05),    # water vapour
+    (2000.0, 0.45), (2200.0, 0.45), (2400.0, 0.30), (2500.0, 0.25),
+)
+
+
+def snr_weights(wavelengths_nm: np.ndarray) -> np.ndarray:
+    """Per-band relative SNR from :data:`AVIRIS_SNR_PROFILE`."""
+    anchors_nm = np.array([a for a, _ in AVIRIS_SNR_PROFILE])
+    anchors_w = np.array([w for _, w in AVIRIS_SNR_PROFILE])
+    return np.interp(np.asarray(wavelengths_nm, dtype=np.float64), anchors_nm, anchors_w)
+
+
+def add_noise(spectrum: np.ndarray, snr_db: float, rng, weights=None) -> np.ndarray:
+    """Additive Gaussian noise at a stated SNR, defined on signal power.
+
+    ``weights`` gives per-band relative SNR. Without it the noise is uniform
+    across bands, which is the simpler assumption and the one that **favours
+    SWIR**: it grants the SWIR bands the same signal quality as the visible,
+    where a real spectrometer delivers considerably less. The uniform result is
+    therefore an upper bound on the SWIR advantage, and the weighted run is what
+    bounds it from the other side.
+    """
     if not np.isfinite(snr_db):
         return spectrum
     signal_power = float(np.mean(spectrum**2))
     noise_power = signal_power / (10.0 ** (snr_db / 10.0))
-    return spectrum + rng.normal(0.0, np.sqrt(noise_power), spectrum.shape)
+    sigma = np.sqrt(noise_power)
+    if weights is not None:
+        # Higher relative SNR -> proportionally less noise in that band.
+        sigma = sigma / np.clip(np.asarray(weights, dtype=np.float64), 1e-3, None)
+    return spectrum + rng.normal(0.0, 1.0, spectrum.shape) * sigma
 
 
 def cell_seed(subset_name, abundance, snr_db, remove_background, n_materials, base):
@@ -243,7 +284,7 @@ def cell_seed(subset_name, abundance, snr_db, remove_background, n_materials, ba
 def run(
     library_nm, library, materials, sensor_nm, background, subset, abundance,
     snr_db, n_trials, rng=None, remove_background: bool = True, resampled=None,
-    base_seed: int = 0,
+    base_seed: int = 0, band_weights=None,
 ):
     """Top-1 material identification accuracy for one experimental cell.
 
@@ -271,8 +312,9 @@ def run(
 
     rng = np.random.default_rng(
         cell_seed(subset.name, abundance, snr_db, remove_background,
-                  len(set(materials)), base_seed)
+                  len(set(materials)), base_seed + (7919 if band_weights is not None else 0))
     )
+    weights = None if band_weights is None else band_weights[mask]
 
     if resampled is None:
         resampled = np.vstack(
@@ -300,7 +342,7 @@ def run(
         idx = int(rng.choice(by_material[material]))
         target = resampled[idx][mask]
         mixed = abundance * target + (1.0 - abundance) * bg
-        observed = add_noise(mixed, snr_db, rng)
+        observed = add_noise(mixed, snr_db, rng, weights)
         if remove_background:
             observed = observed - bg
         if not np.all(np.isfinite(observed)) or np.linalg.norm(observed) == 0:
@@ -437,29 +479,64 @@ def main(argv=None) -> int:
     # --- The realistic-library arm: measured, not extrapolated -------------
     full_lib = load_full_mineral_library() if FULL_MINERAL_LIBRARY else None
     if full_lib is not None:
-        fl_nm, fl_spectra, fl_materials = full_lib
-        n_species = len(set(fl_materials))
-        print(f"\nBackground-removed matching against the FULL mineral library "
-              f"({fl_spectra.shape[0]:,} spectra, {n_species} species), "
-              f"full range, SNR 20 dB")
-        print("  " + " " * 12 + "".join(f"{a:>8.2f}" for a in ABUNDANCES)
-              + "    <- target abundance")
+        fl_nm, fl_spectra, fl_species, fl_families = full_lib
+        n_species = len(set(fl_species))
+        n_families = len(set(fl_families))
         fl_resampled = resample_library(fl_spectra, fl_nm, sensor_nm)
         fl_bg, _ = background_spectrum(sensor_nm, target_mean=float(fl_spectra.mean()))
-        row = []
-        for a in ABUNDANCES:
-            acc = run(fl_nm, fl_spectra, fl_materials, sensor_nm, fl_bg, full, a,
-                      20.0, args.trials, remove_background=True,
-                      resampled=fl_resampled, base_seed=args.seed)
-            row.append(acc)
-            report["accuracy"].setdefault("full_library", {})[f"a={a}"] = acc
-        print(f"  {n_species} species" + "".join(f"{v:>8.3f}" for v in row)
-              + f"   (chance {1 / n_species:.4f})")
-        report["full_library"] = {
+        weights = snr_weights(sensor_nm)
+
+        print(f"\nFULL MINERAL LIBRARY: {fl_spectra.shape[0]:,} spectra, "
+              f"{n_species} species, {n_families} families "
+              f"(ECOSTRESS 'Class': silicate, carbonate, sulfate, oxide, ...)")
+        print("  " + " " * 26 + "".join(f"{a:>8.2f}" for a in ABUNDANCES)
+              + "    <- target abundance")
+
+        arms = [
+            # label,                    labels,      uniform SNR, chance
+            ("species, uniform SNR",    fl_species,  None,        1 / n_species),
+            ("species, AVIRIS SNR",     fl_species,  weights,     1 / n_species),
+            ("FAMILY, uniform SNR",     fl_families, None,        1 / n_families),
+            ("FAMILY, AVIRIS SNR",      fl_families, weights,     1 / n_families),
+        ]
+        for label, labels, w, chance in arms:
+            row = []
+            for a in ABUNDANCES:
+                acc = run(fl_nm, fl_spectra, labels, sensor_nm, fl_bg, full, a,
+                          20.0, args.trials, remove_background=True,
+                          resampled=fl_resampled, base_seed=args.seed,
+                          band_weights=w)
+                row.append(acc)
+                report["accuracy"].setdefault("full_library", {})[f"{label}|a={a}"] = acc
+            print(f"  {label:<24}" + "".join(f"{v:>8.3f}" for v in row)
+                  + f"   (chance {chance:.4f})")
+
+        report["full_library_meta"] = {
             "n_spectra": int(fl_spectra.shape[0]),
             "n_species": int(n_species),
-            "chance": 1.0 / n_species,
+            "n_families": int(n_families),
+            "chance_species": 1.0 / n_species,
+            "chance_family": 1.0 / n_families,
+            "family_source": "ECOSTRESS 'Class' field",
+            "snr_profile": "AVIRIS-like: peak VNIR, declining SWIR, "
+                           "troughs at 1400 and 1900 nm water vapour",
         }
+
+    # --- What the band ablation looks like under a real SNR profile --------
+    print("\nBand ablation under WAVELENGTH-DEPENDENT SNR (nominal 20 dB at peak)")
+    print("  " + " " * 12 + "".join(f"{a:>8.2f}" for a in ABUNDANCES)
+          + "    <- target abundance")
+    weights_curated = snr_weights(sensor_nm)
+    for b in BAND_SUBSETS:
+        row = []
+        for a in ABUNDANCES:
+            acc = run(library_nm, library, materials, sensor_nm, background, b, a,
+                      20.0, args.trials, remove_background=True,
+                      resampled=resampled, base_seed=args.seed,
+                      band_weights=weights_curated)
+            row.append(acc)
+            report["accuracy"].setdefault("band_subset_aviris_snr", {})[f"{b.name}|a={a}"] = acc
+        print(f"  {b.name:<12}" + "".join(f"{v:>8.3f}" for v in row))
 
     n_materials = len(set(materials))
     counts = {m: int((materials == m).sum()) for m in set(materials)}

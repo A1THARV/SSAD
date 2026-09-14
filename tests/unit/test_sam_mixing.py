@@ -18,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 from sam_mixing_experiment import (  # noqa: E402
     ABLATION_SNRS_DB,
     cell_seed,
+    snr_weights,
     BAND_SUBSETS,
     add_noise,
     background_spectrum,
@@ -200,3 +201,40 @@ def test_cell_seed_is_stable_across_processes():
         for h in ("0", "1", "random")
     }
     assert len(seen) == 1, f"seed varies with PYTHONHASHSEED: {seen}"
+
+
+# --------------------------------------------------------------------------
+# Wavelength-dependent SNR, and family granularity
+# --------------------------------------------------------------------------
+
+
+def test_snr_profile_penalises_swir_relative_to_visible():
+    # Uniform noise is the assumption that FAVOURS SWIR. A real spectrometer
+    # peaks in the visible/NIR and declines through SWIR, so a SWIR-advantage
+    # result measured under uniform noise is an upper bound.
+    w = snr_weights(np.array([550.0, 700.0, 2200.0, 2400.0]))
+    assert w[1] > w[2] > w[3]
+
+
+def test_snr_profile_has_the_water_vapour_troughs():
+    # ~1400 and ~1900 nm: atmospheric water absorbs nearly everything, so a
+    # profile without these troughs would overstate SWIR badly.
+    w = snr_weights(np.array([1300.0, 1400.0, 1700.0, 1900.0, 2000.0]))
+    assert w[1] < 0.2 * w[0], "no 1400 nm trough"
+    assert w[3] < 0.2 * w[2], "no 1900 nm trough"
+
+
+def test_weighted_noise_is_larger_where_snr_is_lower():
+    rng = np.random.default_rng(0)
+    signal = np.full(20000, 1.0)
+    weights = np.concatenate([np.full(10000, 1.0), np.full(10000, 0.1)])
+    noisy = add_noise(signal, 20.0, rng, weights)
+    assert np.std(noisy[10000:]) > 5 * np.std(noisy[:10000])
+
+
+def test_weighted_and_uniform_runs_do_not_share_a_seed():
+    # Different experimental conditions; colliding seeds would correlate them
+    # in a way nothing downstream would reveal.
+    base = dict(subset_name="full", abundance=0.3, snr_db=20.0,
+                remove_background=True, n_materials=15)
+    assert cell_seed(**base, base=0) != cell_seed(**base, base=7919)
