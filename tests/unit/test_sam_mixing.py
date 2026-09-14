@@ -1,7 +1,7 @@
 """Invariants of the controlled mixing experiment.
 
 The experiment is synthetic, so its conclusions are only as good as its
-construction. These pin the three construction errors that were actually made
+construction. These pin the four construction errors that were actually made
 while building it, each of which produced a plausible but meaningless table.
 """
 
@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 
 from sam_mixing_experiment import (  # noqa: E402
     ABLATION_SNRS_DB,
+    cell_seed,
     BAND_SUBSETS,
     add_noise,
     background_spectrum,
@@ -86,8 +87,7 @@ def test_noiseless_background_removed_matching_is_exactly_solvable():
     lib_nm, library, materials, wl, bg = _tiny_setup()
     resampled = resample_library(library, lib_nm, wl)
     acc = run(lib_nm, library, materials, wl, bg, BAND_SUBSETS[1], 0.05,
-              np.inf, 40, np.random.default_rng(1),
-              remove_background=True, resampled=resampled)
+              np.inf, 40, remove_background=True, resampled=resampled)
     assert acc == 1.0
 
 
@@ -110,11 +110,9 @@ def test_raw_matching_collapses_for_a_minority_target():
     lib_nm, library, materials, wl, bg = _tiny_setup()
     resampled = resample_library(library, lib_nm, wl)
     raw = run(lib_nm, library, materials, wl, bg, BAND_SUBSETS[0], 0.05,
-              np.inf, 60, np.random.default_rng(2),
-              remove_background=False, resampled=resampled)
+              np.inf, 60, remove_background=False, resampled=resampled)
     removed = run(lib_nm, library, materials, wl, bg, BAND_SUBSETS[0], 0.05,
-                  np.inf, 60, np.random.default_rng(2),
-                  remove_background=True, resampled=resampled)
+                  np.inf, 60, remove_background=True, resampled=resampled)
     assert raw < removed
     assert removed == 1.0
 
@@ -145,7 +143,60 @@ def test_scoring_is_by_material_not_by_spectrum_index():
     bg, _ = background_spectrum(wl, target_mean=float(library.mean()))
     resampled = resample_library(library, lib_nm, wl)
     acc = run(lib_nm, library, materials, wl, bg, BAND_SUBSETS[0], 0.5,
-              30.0, 40, np.random.default_rng(4),
-              remove_background=True, resampled=resampled)
+              30.0, 40, remove_background=True, resampled=resampled)
     # Picking either quartz for a quartz target must count as correct.
     assert acc > 0.8
+
+
+# --------------------------------------------------------------------------
+# Construction error 4: shared RNG made results depend on evaluation order
+# --------------------------------------------------------------------------
+
+
+def test_the_same_configuration_gives_the_same_number_everywhere():
+    # Found by review. All cells drew from one shared stream, so a cell's result
+    # depended on how many cells ran before it: the same configuration appeared
+    # in two tables as 0.404 and 0.364, and adding a table silently changed
+    # every number after it.
+    lib_nm, library, materials, wl, bg = _tiny_setup()
+    resampled = resample_library(library, lib_nm, wl)
+    kw = dict(remove_background=True, resampled=resampled, base_seed=0)
+    first = run(lib_nm, library, materials, wl, bg, BAND_SUBSETS[0], 0.3,
+                20.0, 60, **kw)
+    # Interleave unrelated cells, as a second table would.
+    for a in (0.5, 0.75):
+        run(lib_nm, library, materials, wl, bg, BAND_SUBSETS[1], a, 10.0, 60, **kw)
+    second = run(lib_nm, library, materials, wl, bg, BAND_SUBSETS[0], 0.3,
+                 20.0, 60, **kw)
+    assert first == second
+
+
+def test_cell_seed_distinguishes_every_parameter():
+    base = dict(subset_name="full", abundance=0.3, snr_db=20.0,
+                remove_background=True, n_materials=15, base=0)
+    ref = cell_seed(**base)
+    for field, other in [("subset_name", "swir"), ("abundance", 0.5),
+                         ("snr_db", 10.0), ("remove_background", False),
+                         ("n_materials", 10), ("base", 1)]:
+        assert cell_seed(**{**base, field: other}) != ref, f"{field} does not change the seed"
+
+
+def test_cell_seed_is_stable_across_processes():
+    # Python's builtin hash() is randomised per process for strings, so seeding
+    # from it would silently make every run different -- the exact
+    # irreproducibility the per-cell seeding was introduced to remove.
+    import subprocess
+    import sys as _sys
+
+    code = (
+        "import sys; sys.path.insert(0, r'%s');"
+        "from sam_mixing_experiment import cell_seed;"
+        "print(cell_seed('full', 0.3, 20.0, True, 15, 0))"
+        % str(Path(__file__).resolve().parents[2] / "scripts")
+    )
+    seen = {
+        subprocess.run([_sys.executable, "-c", code], capture_output=True,
+                       text=True, env={**__import__("os").environ, "PYTHONHASHSEED": h}).stdout.strip()
+        for h in ("0", "1", "random")
+    }
+    assert len(seen) == 1, f"seed varies with PYTHONHASHSEED: {seen}"

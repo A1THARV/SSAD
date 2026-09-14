@@ -38,6 +38,7 @@ measure sample recall rather than material identification.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 from dataclasses import dataclass
@@ -59,6 +60,7 @@ from pipeline.hyperspectral.sam import (  # noqa: E402
 )
 
 CURATED = Path("data/speclib/curated/reflectance_swir.npz")
+ECOSTRESS = Path("data/speclib/ecostress/ecospeclib-all")
 CORPUS = Path("data/hyperspectral/had100/HAD100Dataset/train/aviris_ng")
 CORPUS_ALT = Path("data/hyperspectral/had100/HAD100/HAD100Dataset/train/aviris_ng")
 
@@ -111,6 +113,12 @@ ABLATION_SNRS_DB = (20.0, 10.0)
 #: 15-material subset is an upper bound on what a realistic library would give.
 LIBRARY_SIZES = (5, 10, 15)
 
+#: The curated subset holds 238 spectra but only 15 keyword-matched materials.
+#: A realistic mineral library is far larger, and rather than bound the effect
+#: with a caveat it is measured directly: every mineral/rock reflectance
+#: spectrum in ECOSTRESS with full SWIR coverage, labelled by species.
+FULL_MINERAL_LIBRARY = True
+
 
 def load_library(path: Path = CURATED):
     if not path.is_file():
@@ -126,6 +134,42 @@ def load_library(path: Path = CURATED):
         np.array([str(m) for m in blob["material"]]),
         np.array([str(n) for n in blob["names"]]),
     )
+
+
+def load_full_mineral_library(root: Path = ECOSTRESS, target_nm=None):
+    """Every mineral/rock reflectance spectrum with full SWIR coverage.
+
+    Labelled by species rather than by the 15 curated keywords, so the number of
+    candidate materials reflects what a real reference library would present.
+    Returns ``None`` if the raw library is absent, so the run degrades to the
+    curated arm rather than failing.
+    """
+    if not root.is_dir():
+        return None
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from build_speclib import classify_measurement, load_library as _load
+
+    spectra, names = [], []
+    for sp in _load(root):
+        if classify_measurement(sp.metadata) != "reflectance":
+            continue
+        if not sp.covers((0.4, 2.5)):
+            continue
+        if not any(k in sp.metadata.get("Type", "").lower() for k in ("mineral", "rock")):
+            continue
+        label = (sp.metadata.get("Mineral") or sp.metadata.get("Name") or "").strip().lower()
+        if not label:
+            continue
+        spectra.append(sp)
+        names.append(label.split()[0].strip(".,"))
+    if not spectra:
+        return None
+
+    grid = np.linspace(400.0, 2500.0, 512)
+    stacked = np.vstack([
+        np.interp(grid, sp.wavelength_um * 1000.0, sp.value) for sp in spectra
+    ])
+    return grid, stacked, np.array(names)
 
 
 def background_spectrum(
@@ -173,9 +217,33 @@ def add_noise(spectrum: np.ndarray, snr_db: float, rng) -> np.ndarray:
     return spectrum + rng.normal(0.0, np.sqrt(noise_power), spectrum.shape)
 
 
+def cell_seed(subset_name, abundance, snr_db, remove_background, n_materials, base):
+    """A seed determined by WHAT is being measured, not by evaluation order.
+
+    Every cell drew from one shared RNG stream at first, which meant a cell's
+    result depended on how many cells had run before it -- so the same
+    configuration appearing in two tables gave two different numbers (0.404 and
+    0.364 for full range at a=0.10, 20 dB), and adding a table silently changed
+    every number after it. Deriving the seed from the cell's own parameters
+    makes identical configurations identical wherever they appear, and makes the
+    whole run independent of table order.
+    """
+    # hashlib, NOT Python's hash(): the builtin is randomised per process for
+    # strings unless PYTHONHASHSEED is set, so seeding from it would make every
+    # run produce different numbers -- reintroducing the irreproducibility this
+    # function exists to remove, in a form that is harder to notice.
+    key = "|".join(str(x) for x in (
+        subset_name, round(float(abundance), 6),
+        "inf" if not np.isfinite(snr_db) else round(float(snr_db), 3),
+        bool(remove_background), int(n_materials), int(base),
+    ))
+    return int(hashlib.sha256(key.encode("utf-8")).hexdigest()[:8], 16)
+
+
 def run(
     library_nm, library, materials, sensor_nm, background, subset, abundance,
-    snr_db, n_trials, rng, remove_background: bool = True, resampled=None,
+    snr_db, n_trials, rng=None, remove_background: bool = True, resampled=None,
+    base_seed: int = 0,
 ):
     """Top-1 material identification accuracy for one experimental cell.
 
@@ -200,6 +268,11 @@ def run(
     mask = subset.mask(sensor_nm)
     if mask.sum() < 2:
         return None
+
+    rng = np.random.default_rng(
+        cell_seed(subset.name, abundance, snr_db, remove_background,
+                  len(set(materials)), base_seed)
+    )
 
     if resampled is None:
         resampled = np.vstack(
@@ -299,8 +372,8 @@ def main(argv=None) -> int:
         "raw",
         [("full range", {"subset": full, "remove_background": False})],
         lambda kw, a: run(library_nm, library, materials, sensor_nm, background,
-                          kw["subset"], a, np.inf, args.trials, rng,
-                          remove_background=False, resampled=resampled),
+                          kw["subset"], a, np.inf, args.trials,
+                          remove_background=False, resampled=resampled, base_seed=args.seed),
     )
 
     # --- The headline ablation, on the pipeline's actual formulation --------
@@ -323,8 +396,8 @@ def main(argv=None) -> int:
             [(b.name, {"subset": b}) for b in BAND_SUBSETS],
             lambda kw, a, _snr=snr: run(
                 library_nm, library, materials, sensor_nm, background,
-                kw["subset"], a, _snr, args.trials, rng,
-                remove_background=True, resampled=resampled),
+                kw["subset"], a, _snr, args.trials,
+                remove_background=True, resampled=resampled, base_seed=args.seed),
         )
     for b in BAND_SUBSETS:
         report["band_subsets"][b.name]["n_bands"] = int(b.mask(sensor_nm).sum())
@@ -336,8 +409,8 @@ def main(argv=None) -> int:
         [("noiseless" if not np.isfinite(s) else f"{s:.0f} dB", {"snr": s})
          for s in SNRS_DB],
         lambda kw, a: run(library_nm, library, materials, sensor_nm, background,
-                          full, a, kw["snr"], args.trials, rng,
-                          remove_background=True, resampled=resampled),
+                          full, a, kw["snr"], args.trials,
+                          remove_background=True, resampled=resampled, base_seed=args.seed),
     )
 
     # --- Library size: how many candidate materials must be told apart -----
@@ -354,12 +427,39 @@ def main(argv=None) -> int:
         row = []
         for a in ABUNDANCES:
             acc = run(library_nm, library[sel], materials[sel], sensor_nm, background,
-                      full, a, 20.0, args.trials, rng, remove_background=True,
-                      resampled=resampled[sel])
+                      full, a, 20.0, args.trials, remove_background=True,
+                      resampled=resampled[sel], base_seed=args.seed)
             row.append(acc)
             report["accuracy"].setdefault("library_size", {})[f"{size}|a={a}"] = acc
         print(f"  {size:>2} materials" + "".join(f"{v:>8.3f}" for v in row)
               + f"   (chance {1/size:.3f})")
+
+    # --- The realistic-library arm: measured, not extrapolated -------------
+    full_lib = load_full_mineral_library() if FULL_MINERAL_LIBRARY else None
+    if full_lib is not None:
+        fl_nm, fl_spectra, fl_materials = full_lib
+        n_species = len(set(fl_materials))
+        print(f"\nBackground-removed matching against the FULL mineral library "
+              f"({fl_spectra.shape[0]:,} spectra, {n_species} species), "
+              f"full range, SNR 20 dB")
+        print("  " + " " * 12 + "".join(f"{a:>8.2f}" for a in ABUNDANCES)
+              + "    <- target abundance")
+        fl_resampled = resample_library(fl_spectra, fl_nm, sensor_nm)
+        fl_bg, _ = background_spectrum(sensor_nm, target_mean=float(fl_spectra.mean()))
+        row = []
+        for a in ABUNDANCES:
+            acc = run(fl_nm, fl_spectra, fl_materials, sensor_nm, fl_bg, full, a,
+                      20.0, args.trials, remove_background=True,
+                      resampled=fl_resampled, base_seed=args.seed)
+            row.append(acc)
+            report["accuracy"].setdefault("full_library", {})[f"a={a}"] = acc
+        print(f"  {n_species} species" + "".join(f"{v:>8.3f}" for v in row)
+              + f"   (chance {1 / n_species:.4f})")
+        report["full_library"] = {
+            "n_spectra": int(fl_spectra.shape[0]),
+            "n_species": int(n_species),
+            "chance": 1.0 / n_species,
+        }
 
     n_materials = len(set(materials))
     counts = {m: int((materials == m).sum()) for m in set(materials)}

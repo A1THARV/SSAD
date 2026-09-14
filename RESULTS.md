@@ -906,34 +906,42 @@ python scripts/sam_mixing_experiment.py`.
 
 ---
 
-## 14. Non-diagnostic bands actively degrade performance, and which bands are diagnostic is task-dependent
+## 14. Which bands are diagnostic is task-dependent — and below a threshold, extra bands hurt
 
-**This is the work's most general result, and it is measured twice in opposite
-directions on the same data.**
+Measured in both directions on the same sensor and the same scenes:
 
-| | best window | worst window | does the full range win? |
+| | best window | worst window | full 276 bands |
 |---|---|---|---|
-| **Detection** (§3, RX mAUC) | **visible** 0.9799 | SWIR-ish 0.9162 | **No** — full 276 bands give 0.9647 |
-| **Identification** (§14, a = 0.10) | **SWIR** 0.588 | visible 0.156 | **No** — full 276 bands give 0.404 |
+| **Detection** (§3, RX mAUC) | **visible** 0.9799 | SWIR-ish 0.9162 | 0.9647 |
+| **Identification** (§14, a = 0.10, 20 dB) | **SWIR** 0.580 | visible 0.180 | 0.412 |
 
-Two claims, neither obvious:
+**The claim that generalises:** which part of the spectrum carries the signal is a
+property of the *task*, not of the sensor or the scene. Detection of these
+targets lives at 455–700 nm; identification of their material lives at
+1500–2450 nm. The same pixels, read for different purposes, want different bands.
 
-1. **More spectral data makes performance worse.** In both directions, the
-   best single window beats the full 276-band range. Bands carrying no
-   diagnostic information for the task do not sit inertly; they add noise to
-   the distance or angle being computed, and cost accuracy.
-2. **Which bands are diagnostic is a property of the task, not the sensor or
-   the scene.** The same pixels, the same instrument: detection wants
-   455–700 nm and is hurt by SWIR; identification wants 1500–2450 nm and is
-   hurt by the visible.
+**The claim that needs scoping:** *"more spectral data makes performance worse"*
+is true **only at or below a target abundance of about 0.20**, and stating it
+without that qualifier would make it falsifiable by anyone rerunning at a = 0.5.
 
-This converts the Discussion's "detection and identification need different
-bands" from an architectural argument into a measured result, and it is why the
-pipeline exposes `good_bands_preset` per task rather than fixing one band set
-for the whole system.
+| SNR 20 dB | a = 1.0 | 0.75 | 0.50 | 0.30 | 0.20 | 0.10 | 0.05 |
+|---|---|---|---|---|---|---|---|
+| full (276 bands) | **0.980** | **0.980** | **0.956** | **0.872** | 0.684 | 0.412 | 0.204 |
+| swir (126 bands) | 0.908 | 0.864 | 0.824 | 0.764 | **0.744** | **0.580** | **0.388** |
+| | full | full | full | full | **swir** | **swir** | **swir** |
 
-§3 predicted the second half of this before any of it was measured. That the
-prediction held is worth one sentence; the symmetry is the contribution.
+Above the crossover the extra bands pay for themselves; below it they are noise
+the angle has to average over, and dropping 150 of 276 bands nearly doubles
+accuracy. The sub-pixel regime is the one identification exists for, which is why
+the effect matters — but it is a regime, not a universal.
+
+**An asymmetry in the evidence, stated rather than glossed.** The identification
+side has a measured abundance curve and a located crossover. The detection side
+(§3) has **no abundance parameterisation at all** — HAD100's targets are whatever
+size they are, and RX was run on the scenes as they come. So whether detection has
+an equivalent crossover is *unmeasured*, not shown absent. The symmetry is real at
+the points measured; the two sides were not characterised to the same depth, and
+the paper should say so rather than implying a matched pair of curves.
 
 ---
 
@@ -945,70 +953,72 @@ with Gaussian noise at known SNR. The spectra and the background are real; the
 mixing and the noise are not. Ground truth is exact by construction, which is the
 justification — it is the one thing Cuprite cannot currently supply (§14.4).
 
-Top-1 material identification, background-removed matching, **SNR 20 dB**,
-250 trials per cell. Material drawn uniformly then a spectrum of that material,
-so chance is 1/15 = **0.067**.
+Every cell is seeded from its own parameters, so a configuration appearing in
+several tables gives the same number in each, and the result does not depend on
+what order the tables were computed in. 250 trials per cell; material drawn
+uniformly, then a spectrum of that material.
+
+Full ablation at **SNR 20 dB** and **10 dB**:
 
 | bands | n | a = 1.0 | 0.75 | 0.50 | 0.30 | 0.20 | 0.10 | 0.05 |
 |---|---|---|---|---|---|---|---|---|
-| **swir** | 126 | 0.896 | 0.920 | 0.884 | 0.804 | 0.728 | **0.588** | **0.428** |
-| full | 276 | **0.984** | **0.992** | **0.944** | **0.868** | 0.748 | 0.404 | 0.196 |
-| vnir | 101 | 0.792 | 0.660 | 0.496 | 0.304 | 0.212 | 0.200 | 0.080 |
-| visible | 50 | 0.684 | 0.496 | 0.356 | 0.252 | 0.244 | 0.156 | 0.116 |
-
-At **SNR 10 dB** the ordering holds and every value falls:
-
-| bands | a = 1.0 | 0.50 | 0.20 | 0.10 | 0.05 |
-|---|---|---|---|---|---|
-| swir | 0.580 | 0.548 | 0.408 | 0.244 | 0.148 |
-| full | 0.908 | 0.640 | 0.296 | 0.156 | 0.096 |
-| vnir | 0.536 | 0.228 | 0.112 | 0.096 | 0.100 |
-| visible | 0.420 | 0.240 | 0.128 | 0.072 | 0.088 |
-
-**Where the crossover sits.** The full range wins at high abundance, where there
-is enough signal that extra bands help more than they hurt. SWIR-only overtakes
-it below a ≈ 0.20 and is ahead by 1.5–2× at a ≤ 0.10 — the regime that matters,
-since a sub-pixel target is the case identification is *for*.
+| *20 dB* | | | | | | | | |
+| full | 276 | 0.980 | 0.980 | 0.956 | 0.872 | 0.684 | 0.412 | 0.204 |
+| swir | 126 | 0.908 | 0.864 | 0.824 | 0.764 | 0.744 | 0.580 | 0.388 |
+| vnir | 101 | 0.784 | 0.704 | 0.516 | 0.304 | 0.224 | 0.140 | 0.108 |
+| visible | 50 | 0.696 | 0.480 | 0.352 | 0.268 | 0.216 | 0.180 | 0.084 |
+| *10 dB* | | | | | | | | |
+| full | 276 | 0.916 | 0.816 | 0.652 | 0.424 | 0.212 | 0.168 | 0.076 |
+| swir | 126 | 0.604 | 0.576 | 0.480 | 0.488 | 0.340 | 0.228 | 0.180 |
+| vnir | 101 | 0.548 | 0.328 | 0.232 | 0.148 | 0.140 | 0.076 | 0.080 |
+| visible | 50 | 0.440 | 0.328 | 0.164 | 0.128 | 0.116 | 0.084 | 0.124 |
 
 **Operating point, labelled.** The abundance and SNR grids were fixed in the
-script before the first run. The **a = 0.10, SNR 20 dB cell quoted above was not**
-— it was chosen after seeing the results, because it is where the gap is widest.
-It gets the same treatment as §7's α = 0.90: reported, not claimed as a
-pre-registered finding, which is why the full curves are given rather than the
-single cell. `ABLATION_SNRS_DB` was likewise chosen after discovering the
-noiseless case was degenerate (below), a methodological correction rather than a
-selection, but recorded for the same reason.
+script before the first run. The **a = 0.10 / 20 dB cell highlighted above was
+not** — it was chosen after seeing the results, because the gap is widest there.
+Same treatment as §7's α = 0.90: reported, not pre-registered, which is why the
+full curves are given rather than the cell. `ABLATION_SNRS_DB` was likewise
+chosen after the noiseless case proved degenerate — a methodological correction
+rather than a selection, but recorded for the same reason.
 
 **Do not read anything into visible versus VNIR.** At 250 trials the standard
-error is ≈ 0.03, so 0.156 against 0.200 is well inside noise. The finding is that
-both collapse, not that one collapses further.
+error is about 0.03, so 0.180 against 0.140 is well inside noise. The finding is
+that both collapse, not that one collapses further.
 
-### Fifteen materials is a controlled subset, and the figure is an upper bound
+### Against a realistic library: measured, not extrapolated
 
-Identification difficulty scales with the number of candidates. Measured, full
-range, SNR 20 dB:
+The 15-material subset is a controlled setting. Rather than bound its optimism
+with a caveat, the experiment was rerun against **every mineral and rock
+reflectance spectrum in ECOSTRESS with full SWIR coverage — 1,206 spectra across
+253 species**, labelled by species:
 
-| reference library | chance | a = 0.50 | a = 0.20 | a = 0.10 |
-|---|---|---|---|---|
-| 5 materials | 0.200 | 0.972 | 0.880 | 0.644 |
-| 10 materials | 0.100 | 0.984 | 0.840 | 0.524 |
-| 15 materials | 0.067 | 0.952 | 0.704 | 0.364 |
+| reference library | chance | a = 1.0 | 0.50 | 0.30 | 0.20 | 0.10 | 0.05 |
+|---|---|---|---|---|---|---|---|
+| 5 materials | 0.200 | 0.996 | 0.984 | 0.908 | 0.876 | 0.636 | 0.488 |
+| 10 materials | 0.100 | 0.992 | 0.988 | 0.936 | 0.872 | 0.528 | 0.340 |
+| 15 materials | 0.067 | 0.980 | 0.956 | 0.872 | 0.684 | 0.412 | 0.204 |
+| **253 species** | **0.0040** | **0.964** | **0.780** | **0.592** | **0.364** | **0.152** | **0.048** |
 
-Accuracy falls monotonically as the library grows, and a realistic mineral
-library holds hundreds of distinct species rather than fifteen. **These figures
-are therefore an upper bound on operational performance, not an estimate of it.**
+**This is the number Objective 2 should be reported on, and it is not flattering.**
+At a realistic library size, identification is strong for a resolved target
+(0.964 at a = 1.0, 0.780 at a = 0.50) and **weak sub-pixel**: 0.152 at a = 0.10,
+0.048 at a = 0.05.
 
-**A baseline correction.** An earlier draft quoted chance as 1/15 = 0.067 while
-drawing targets uniformly over *spectra*. The subset is heavily imbalanced —
-feldspar is 55 of 238 entries, goethite is 1 — so the trivial majority-class
-strategy would have scored **0.231**, and visible-only's 0.185 was *below* it.
-The draw is now balanced over materials, which makes 0.067 the honest chance
-rate and the numbers above comparable to it.
+Two things keep it from being a null result. It remains far above chance
+throughout — 241× at a = 1.0, still **38× at a = 0.10** and 12× at a = 0.05 — so
+SAM is extracting real information at every abundance. And the degradation is
+orderly rather than a collapse, which is what makes the abundance curve
+informative about when identification can be trusted.
+
+The honest summary for the paper: **SAM identifies a resolved or
+majority-abundance anomaly reliably against a 253-species library, and degrades
+to weak-but-well-above-chance for sub-pixel targets.** Quoting the 15-material
+figure without this would overstate it by a factor of 2.7 at a = 0.10.
 
 ### Three construction errors, each of which produced a plausible table
 
 The experiment is synthetic, so its conclusions are only as good as its
-construction. Each of these was caught by a result that looked wrong:
+construction. Each was caught by a result that looked wrong:
 
 **1. Mismatched units made the abundance axis a lie.** HAD100's crops are not
 reflectance fractions — mean 2.51, against a library mean of 0.60. Mixed
@@ -1022,18 +1032,25 @@ With exact linear mixing, `observed − bg = a·(target − bg)` is the referenc
 scaled by `a`, and SAM is magnitude-invariant, so the angle to the correct entry
 is *identically zero*. The first band ablation duly reported perfect accuracy on
 visible-only bands — which would have read as **refuting §3** while measuring
-nothing at all. Noise is what makes band choice matter: diagnostic absorptions
-survive it and continuum shape does not.
+nothing at all.
 
 **3. Matching the raw pixel answers a different question.** Against pure library
 spectra with no background removal, accuracy falls to chance for any minority
-target — 1.000 at a = 1.0, then 0.240, 0.040, 0.040. That is not a flaw in SAM:
-as abundance falls every mixture converges on the background *regardless of what
-was mixed in*, so the nearest library entry becomes whichever sits closest to the
-background, the same one every trial. The pipeline is unaffected, because RX
-already defines an anomaly as a departure from background, and matching the
-deviation is what it has available. Both are reported — only the second would
-overstate SAM, only the first would misdescribe the pipeline.
+target — 1.000 at a = 1.0, then 0.240, 0.040, 0.040. Not a flaw in SAM: as
+abundance falls every mixture converges on the background *regardless of what was
+mixed in*. The pipeline is unaffected, because RX already defines an anomaly as a
+departure from background. Both are reported — only the second would overstate
+SAM, only the first would misdescribe the pipeline.
+
+**And a fourth, found by review rather than by me.** The first version shared one
+RNG stream across all cells, so a cell's result depended on how many cells had
+run before it. The same configuration appeared in two tables with two different
+numbers (0.404 and 0.364), and adding a table silently changed every number after
+it. Seeds are now derived from each cell's own parameters — via `hashlib`, not
+Python's `hash()`, which is randomised per process for strings and would have
+reintroduced the same irreproducibility in a harder-to-notice form. The three
+tables sharing the `full / a = 0.10 / 20 dB` configuration now all read
+**0.412**.
 
 Reproduce with `python scripts/sam_mixing_experiment.py`.
 
