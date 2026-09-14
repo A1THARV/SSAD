@@ -710,10 +710,19 @@ Frame `00001`, 9,124 pixels above 100 °C, brightness temperature **213.4 °C**:
 | sand | 0.9388 | 49 | 223.5 °C | 216.9 – 240.0 |
 | bark | 0.9483 | 18 | 222.2 °C | 217.0 – 237.5 |
 | char | 0.9493 | 36 | 221.7 °C | 216.0 – 229.9 |
-| vegetation | 0.9531 | 549 | 221.0 °C | 214.9 – 245.2 |
+| dry vegetation | 0.9525 | 62 | 221.4 °C | 215.8 – 237.5 |
 | grass | 0.9638 | 10 | 219.2 °C | 215.9 – 223.7 |
 | soil | 0.9650 | 69 | 219.0 °C | 215.8 – 229.5 |
 | *brass (out of class)* | *0.1352* | *16* | ***875.3 °C*** | *661.9 – 1155.8* |
+
+**Brass is what the library has, not what was picked.** Steel — the natural
+counterexample, and the one an earlier draft used at an assumed ε = 0.28 — has
+no LWIR-capable entry here, and neither does metallic aluminium. The metals
+ECOSTRESS actually measures over 7.5–13.5 µm are brass and gold, at ε ≈ 0.10–0.14.
+Absent that constraint the obvious objection stands: selecting the lowest-ε
+material available would inflate the contrast on purpose. The ratio below is
+what the library permitted, and it would have been *smaller* had steel been
+present.
 
 | | ε range | retrieved spread |
 |---|---|---|
@@ -723,6 +732,28 @@ Frame `00001`, 9,124 pixels above 100 °C, brightness temperature **213.4 °C**:
 A **149× ratio**. So the requirement on ε is not a per-pixel material identity;
 it is that ε be constrained to the **right material class**. Getting the class
 right costs ~4 K. Getting it wrong costs ~650 K.
+
+### The vegetation prior is scene-appropriate, and that turned out not to matter
+
+A burning scene is dry, senescent material, so the prior resolves to ECOSTRESS's
+`nonphotosyntheticvegetation.*` branch rather than to every entry mentioning
+vegetation. Measured, the correction is negligible:
+
+| | n | mean ε |
+|---|---|---|
+| photosynthetic (green canopy) | 487 | 0.9537 |
+| **non-photosynthetic (dry, dead)** | **62** | **0.9525** |
+
+A difference of **0.0012**, and the within-class spread does not move — it is set
+by sand against soil, not by vegetation.
+
+The non-effect is itself worth reporting. Green-versus-dry is a **VNIR
+reflectance** phenomenon — chlorophyll absorption and the red edge — while LWIR
+emissivity is dominated by water and cellulose vibrational features and by
+surface structure, which green and senescent vegetation largely share. **The
+distinction that dominates Objective 2 barely registers for Objective 4.** The
+selection is still made explicitly, because a prior that is right by coincidence
+is not provenance.
 
 ### These numbers were re-measured, not carried over
 
@@ -793,6 +824,22 @@ the word appeared in the free-text `Description` field, describing what the
 sample was mounted on rather than what was measured. Matching now uses typed
 fields and the filename taxonomy only, and `Description` is excluded. Without
 the validation, a paint spectrum would have entered the library as a metal.
+
+**Three of the four bugs found while building this library shared one shape:** a
+present thing reported absent, or an absent thing reported present, with no error
+raised anywhere.
+
+| bug | shape |
+|---|---|
+| `Type:` matched for measurement kind | every entry reported absent → two empty subsets, reading as a library deficiency |
+| `Description` supplying keyword matches | paint reported present as aluminium |
+| generic keyword tested before specific | 18 bark entries reported absent, having been absorbed into vegetation |
+
+None raised an exception; each produced a well-formed file. This is the same
+family as §12's preprocessing failures — the output is structurally valid and
+semantically wrong — and it is why the countermeasure has to be an *external*
+check on a value whose correct range is known independently, rather than any
+amount of internal consistency.
 
 ### Limitations
 

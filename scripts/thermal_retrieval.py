@@ -42,11 +42,28 @@ from pipeline.thermal.planck import (  # noqa: E402
     retrieve_temperature,
 )
 
-#: Material classes a wildfire scene plausibly contains, mapped to the keyword
+#: Material classes a wildfire scene plausibly contains, mapped to the substring
 #: their spectra carry in the curated subset. Emissivity is no longer written
 #: here as a constant -- it is derived from ECOSTRESS hemispherical reflectance
 #: via Kirchhoff's law and read from ``emissivity_lwir.npz``.
-SCENE_MATERIALS = ("vegetation", "char", "soil", "grass", "bark", "sand")
+#:
+#: Vegetation resolves to ECOSTRESS's ``nonphotosyntheticvegetation.*`` branch,
+#: not to every entry mentioning vegetation. A burning scene is dry and
+#: senescent material, so averaging green canopy into the prior would describe a
+#: scene that is not on fire.
+#:
+#: Measured, the correction turns out to be small -- non-photosynthetic
+#: vegetation gives eps 0.9525 against 0.9537 for photosynthetic, a difference
+#: of 0.001 -- and that is itself informative. Green-versus-dry is a VNIR
+#: reflectance phenomenon (chlorophyll absorption, the red edge); LWIR
+#: emissivity is dominated by water and cellulose vibrational features and by
+#: surface structure, which the two share. The distinction that dominates
+#: Objective 2 barely registers for Objective 4. The selection is still made
+#: explicitly, because a prior that is right by coincidence is not provenance.
+SCENE_MATERIALS = ("nonphotosyntheticvegetation", "char", "soil", "grass", "bark", "sand")
+
+#: Display names, so the report does not print ECOSTRESS path fragments.
+DISPLAY_NAMES = {"nonphotosyntheticvegetation": "dry vegetation"}
 
 #: Kept deliberately OUT of class: it is what produces the large retrieval error
 #: that shows why epsilon must be constrained to the right material class.
@@ -122,7 +139,8 @@ def main(argv=None) -> int:
     for material, n in sorted(provenance.items()):
         est = table.get(material)
         tag = "  <- out of class" if material == COUNTEREXAMPLE else ""
-        print(f"  {material:<12} eps {est.value:.4f}  "
+        label = DISPLAY_NAMES.get(material, material)
+        print(f"  {label:<16} eps {est.value:.4f}  "
               f"[{est.low:.4f}, {est.high:.4f}]  n={n}{tag}")
     print()
 
@@ -156,7 +174,8 @@ def main(argv=None) -> int:
             }
             flag = " (assumed)" if estimate.is_assumed else ""
             print(
-                f"    {material:<18} e={estimate.value:.2f}{flag:<10} "
+                f"    {DISPLAY_NAMES.get(material, material):<18} "
+                f"e={estimate.value:.2f}{flag:<10} "
                 f"-> {float(out.temperature_c):7.1f} C  "
                 f"[{row[material]['low_c']:.1f}, {row[material]['high_c']:.1f}]  "
                 f"spread {float(out.spread_k):.1f} K"

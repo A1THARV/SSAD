@@ -252,6 +252,62 @@ SOURCES: list[Source] = [
             "Planck module REFUSES such input rather than fabricating a temperature."
         ),
     ),
+    # ---------------- Cuprite, Nevada (M3 candidate) ----------------
+    # The canonical AVIRIS mineral-mapping site, and the natural home for
+    # Objective 2: its diagnostic features are exactly the SWIR absorptions the
+    # curated reflectance subset covers (alunite, kaolinite, buddingtonite at
+    # 2.0-2.5 um), and USGS Tetracorder mineral maps would give IDENTIFICATION
+    # ground truth, which HAD100 and ABU cannot -- they label detection only.
+    #
+    # ACCESS VERIFIED 2026-09-15, and it is PARTIAL. The missing piece is the
+    # important one:
+    #
+    #   reachable   github.com/PSI-edu/spectroscopy-tetracorder      200
+    #               zenodo.org/records/11204505 (1.23 GB)            200
+    #                 -> cuprite95/ holds the Tetracorder mapping RESULTS
+    #                    (the mineral map, as data) and the cube's ENVI .hdr
+    #               aviris.jpl.nasa.gov/dataportal/                  200
+    #
+    #   DEAD        ftp://ftpext.usgs.gov/pub/cr/co/denver/speclab/pub/cuprite
+    #                 -> connection fails (curl 000), and https on that host
+    #                    also fails. This is where README-image-cube.txt sends
+    #                    you for the calibrated cube, which GitHub deliberately
+    #                    omits for size.
+    #               speclab.cr.usgs.gov/cuprite95.tgif.2.2um_map.gif
+    #                 -> 301 to www.usgs.gov/labs/spec-lab; the file is gone.
+    #                    This is the URL cited throughout the literature.
+    #               crustal.usgs.gov/speclab/  -> 301, same landing page
+    #                 (both then return 202 with 0 bytes to scripted requests)
+    #
+    # So the mineral map is obtainable and the CALIBRATED REFLECTANCE CUBE IT
+    # CORRESPONDS TO IS NOT. Raw AVIRIS radiance is still downloadable from the
+    # JPL portal, but converting it to apparent surface reflectance is a
+    # substantial atmospheric-correction job, and the result would no longer
+    # correspond pixel-for-pixel to the Tetracorder product -- which is the
+    # whole reason for wanting Cuprite.
+    #
+    # No mirror of cuprite.95.cal.rtgc was found. Left unresolved rather than
+    # guessed at; see ROADMAP for the M3 decision this forces.
+    Source(
+        key="cuprite_tetracorder",
+        group="hyperspectral",
+        target="hyperspectral/cuprite/tetracorder_cuprite95",
+        kind="dir",
+        url=None,
+        page="https://github.com/PSI-edu/spectroscopy-tetracorder",
+        min_bytes=1024 * 100,
+        manual_reason=(
+            "Partial availability -- see the comment above. The Tetracorder repo "
+            "supplies the mineral map but not the calibrated cube, and the USGS FTP "
+            "holding the cube is dead as of 2026-09-15."
+        ),
+        required_for="M3 (Objective 2 identification ground truth) -- CANDIDATE, unresolved",
+        notes=(
+            "Cite: Clark et al., Imaging spectroscopy: Earth and planetary remote "
+            "sensing with the USGS Tetracorder and expert systems, JGR Planets 108(E12), "
+            "2003. Software: doi:10.5281/zenodo.11204505."
+        ),
+    ),
     # ---------------- Spectral libraries (PRD §7.2, change C4) ----------------
     Source(
         key="speclib_ecostress",
