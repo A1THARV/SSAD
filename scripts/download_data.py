@@ -263,18 +263,34 @@ SOURCES: list[Source] = [
         manual_reason=(
             "Spectra are selected through the site's search interface at "
             "https://speclib.jpl.nasa.gov/library, so the subset is chosen by hand.\n"
-            "BLOCKED 2026-09-04 to 2026-09-13: the JPL ordering page is down for "
-            "scheduled maintenance ('The ordering page will be unavailable between "
-            "September 4th - 13th'). Time-boxed, not an account wall -- so do NOT "
-            "switch to speclib_usgs over this. Retry from 2026-09-13."
+            "ORDERED 2026-09-14: order ecospeclib-1789396065385, one item, "
+            "spectra_all.txt. JPL emails a download link once the order is "
+            "processed; drop the file at the target path below.
+"
+            "(The earlier 2026-09-04 to 2026-09-13 block was scheduled maintenance on "
+            "the ordering page, now cleared.)"
         ),
-        required_for="M3 (SAM), M5 (emissivity) -- not needed before Phase 4",
+        required_for="M3 (SAM) and M5 (the epsilon prior) -- two subsets, one file",
         notes=(
             "PRIMARY library under change C4: 3,400+ spectra, and a superset here -- it "
             "already incorporates the USGS-Reston, JHU and JPL sub-libraries. "
             "Cite: Meerdink et al. (2019) RSE 230:111196; Baldridge et al. (2009) RSE "
-            "113:711-715. NOTE: library spectra arrive on their own wavelength grids "
-            "and MUST be resampled to the sensor grid before SAM (IncompatibleInputError)."
+            "113:711-715.
+"
+            "TWO SUBSETS, NOT ONE. scripts/build_speclib.py extracts both from this "
+            "single file: (a) a REFLECTANCE subset for Objective 2, minerals with SWIR "
+            "absorption features, sized for a SWIR-diagnostic scene per RESULTS.md "
+            "section 3 rather than for HAD100; (b) an LWIR EMISSIVITY subset for "
+            "Objective 4, vegetation/char/ash/soil plus a metal kept deliberately as "
+            "the out-of-class counterexample behind the 307 K error in section 13. The "
+            "second turns Eq. 5's emissivity prior from a hardcoded constant into a "
+            "cited measurement.
+"
+            "NOTE: spectra_all.txt bundles the JHU, JPL and USGS sub-libraries on "
+            "different wavelength grids, so many LWIR entries never reach SWIR and vice "
+            "versa. build_speclib.py checks coverage PER ENTRY at build time and reports "
+            "what it dropped -- otherwise resample_to_grid's (correct) refusal to "
+            "extrapolate surfaces mid-match instead."
         ),
     ),
     Source(

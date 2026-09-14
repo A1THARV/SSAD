@@ -714,20 +714,64 @@ Frame `00001`, 9,124 pixels above 100 °C, brightness temperature **213.4 °C**:
 
 **A 300 °C swing from the material assumption alone.** Not from sensor noise,
 not from the inversion — the same radiance, read as steel rather than as charred
-wood, is a different physical claim about the scene.
+wood, is a different physical claim about the scene. Steel is in this table as a
+deliberate out-of-class counterexample; the next section separates that swing
+from the much smaller error a correct material *class* leaves behind.
 
-### Why this is the thermal branch's real contribution
+### What ε actually has to be constrained to
 
-§11 showed a threshold detects fire perfectly. It cannot do this. Detection
-needs only that hot pixels be hot; retrieval needs to know *what is emitting*,
-and that is a materially harder question the radiometry is necessary for.
+The 300 °C swing is real but it is *across material classes*, and that
+distinction carries the whole claim. Holding the same brightness temperature and
+varying ε across materials a wildfire scene plausibly contains:
 
-It also connects the two objectives that looked independent. **Objective 2
-(material identification) is what makes Objective 4 (temperature retrieval)
-meaningful** — without knowing the material you cannot choose ε, and ε dominates
-the answer. The SAM branch is not a parallel nicety; it is the input this one
-needs. That dependency should be stated in the paper, because the two objectives
-are currently written as though they stand alone.
+| material | ε | retrieved |
+|---|---|---|
+| vegetation | 0.98 | 216.6 °C |
+| charred wood | 0.96 | 219.8 °C |
+| dry grass | 0.95 | 221.5 °C |
+| soil | 0.92 | 226.7 °C |
+| *steel (out of class)* | *0.28* | *521.9 °C* |
+
+| | ε range | retrieved spread |
+|---|---|---|
+| **within class** — vegetation, char, grass, soil | 0.92–0.98 | **10.2 K** |
+| **across class** — adding steel | 0.28–0.98 | **307.0 K** |
+
+A **30× ratio**. So the requirement on ε is not a per-pixel material identity;
+it is that ε be constrained to the **right material class**. Getting the class
+right costs ~10 K of uncertainty. Getting it wrong costs ~300 K.
+
+### Which makes the scene-level prior sufficient
+
+**ε comes from a scene-level material prior.** A wildfire scene is vegetation,
+grass, char and soil — not steel. That prior is available without any material
+identification at all, and it bounds the error at ~10 K, which is the useful
+claim.
+
+Full material identification (Objective 2) **upgrades** that prior where
+co-registered hyperspectral imagery exists. It is not a precondition, and
+stating it as one would create a dependency this architecture cannot satisfy:
+
+* Objective 2 runs on hyperspectral **reflectance**, Objective 4 on **thermal**.
+  Gating one on the other requires cross-modal co-registration, which FR-9.10
+  treats as usually unavailable — it is why fusion defaults to *independent*
+  mode and raises `UnregisteredInputError` rather than fusing unaligned inputs
+  at pixel level.
+* There is no thermal-only escape either. Separating temperature from emissivity
+  within the thermal branch needs **multiple thermal bands** (TES), and FLAME 3's
+  radiometric TIFF is single-channel.
+
+So the honest statement is that a scene-level prior suffices, material ID
+sharpens it where alignment happens to exist, and single-band retrieval reports
+its assumption either way. That keeps the finding without requiring an alignment
+the pipeline does not have.
+
+### Why this is still the thermal branch's real contribution
+
+§11 showed a threshold detects fire perfectly. It cannot do this. Detection needs
+only that hot pixels be hot; retrieval needs to know what class of thing is
+emitting, and that is a question radiometry is necessary for and a threshold
+cannot reach.
 
 ### What is reported, and what is refused
 
