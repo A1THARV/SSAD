@@ -699,125 +699,130 @@ is an anecdote.
 
 ## 13. M5: the emissivity assumption dominates the retrieved temperature
 
-Eq. 5 inverted on real FLAME 3 fire pixels, at 10 µm, under four different
-material assumptions. **The sensor data is identical in every row** — only the
-assumed emissivity changes.
+Eq. 5 inverted on real FLAME 3 fire pixels at 10 µm. **The sensor data is
+identical in every row** — only the assumed material changes. Every ε below is
+derived from measured ECOSTRESS hemispherical reflectance, not hand-picked.
 
 Frame `00001`, 9,124 pixels above 100 °C, brightness temperature **213.4 °C**:
 
-| assumed material | ε | retrieved | bounds | spread |
+| assumed material | ε | n spectra | retrieved | bounds |
 |---|---|---|---|---|
-| charred wood | 0.96 | 219.9 °C | 216.6 – 223.2 | 6.7 K |
-| dry grass | 0.95 | 221.5 °C | 218.2 – 226.7 | 8.5 K |
-| **steel** | **0.28** | **522.0 °C** | 406.9 – 1112.7 | **705.8 K** |
-| unlisted (assumed default) | 0.95 | 221.5 °C | 216.6 – 240.0 | 23.4 K |
-
-**A 300 °C swing from the material assumption alone.** Not from sensor noise,
-not from the inversion — the same radiance, read as steel rather than as charred
-wood, is a different physical claim about the scene. Steel is in this table as a
-deliberate out-of-class counterexample; the next section separates that swing
-from the much smaller error a correct material *class* leaves behind.
-
-### What ε actually has to be constrained to
-
-The 300 °C swing is real but it is *across material classes*, and that
-distinction carries the whole claim. Holding the same brightness temperature and
-varying ε across materials a wildfire scene plausibly contains:
-
-| material | ε | retrieved |
-|---|---|---|
-| vegetation | 0.98 | 216.6 °C |
-| charred wood | 0.96 | 219.8 °C |
-| dry grass | 0.95 | 221.5 °C |
-| soil | 0.92 | 226.7 °C |
-| *steel (out of class)* | *0.28* | *521.9 °C* |
+| sand | 0.9388 | 49 | 223.5 °C | 216.9 – 240.0 |
+| bark | 0.9483 | 18 | 222.2 °C | 217.0 – 237.5 |
+| char | 0.9493 | 36 | 221.7 °C | 216.0 – 229.9 |
+| vegetation | 0.9531 | 549 | 221.0 °C | 214.9 – 245.2 |
+| grass | 0.9638 | 10 | 219.2 °C | 215.9 – 223.7 |
+| soil | 0.9650 | 69 | 219.0 °C | 215.8 – 229.5 |
+| *brass (out of class)* | *0.1352* | *16* | ***875.3 °C*** | *661.9 – 1155.8* |
 
 | | ε range | retrieved spread |
 |---|---|---|
-| **within class** — vegetation, char, grass, soil | 0.92–0.98 | **10.2 K** |
-| **across class** — adding steel | 0.28–0.98 | **307.0 K** |
+| **within class** — the six wildfire materials | 0.939 – 0.965 | **4.4 K** |
+| **across class** — adding brass | 0.135 – 0.965 | **656.3 K** |
 
-A **30× ratio**. So the requirement on ε is not a per-pixel material identity;
+A **149× ratio**. So the requirement on ε is not a per-pixel material identity;
 it is that ε be constrained to the **right material class**. Getting the class
-right costs ~10 K of uncertainty. Getting it wrong costs ~300 K.
+right costs ~4 K. Getting it wrong costs ~650 K.
 
-### Which makes the scene-level prior sufficient
+### These numbers were re-measured, not carried over
 
-**ε comes from a scene-level material prior.** A wildfire scene is vegetation,
-grass, char and soil — not steel. That prior is available without any material
-identification at all, and it bounds the error at ~10 K.
+An earlier draft reported 10.2 K within-class and 307.0 K across-class, using
+hand-picked textbook emissivities with steel (ε = 0.28) as the counterexample.
+Both figures changed once the library replaced the constants, and in opposite
+directions:
+
+* **Within-class fell from 10.2 K to 4.4 K.** The measured values cluster far
+  more tightly (0.939–0.965) than the textbook set did (0.92–0.98).
+* **Across-class rose from 307 K to 656 K.** Steel is absent from this library
+  at LWIR coverage, and so is metallic aluminium — its only matches were *black
+  gloss paint on an aluminium substrate*. Brass is present and measured, and at
+  ε ≈ 0.135 it is well below steel's 0.28, so the error it produces is larger.
+
+Substituting the counterexample while inheriting the old figure would have
+understated the effect by a factor of two.
 
 ### Sufficient for what, exactly
 
-"~10 K" means nothing without the task it is measured against, and it is
-sufficient for some and not others:
+"~4 K" means nothing without the task it is measured against:
 
 | framing | value |
 |---|---|
-| spread, absolute | 10.2 K |
-| relative, in kelvin — the physical figure | **2.07 %** |
-| relative, in Celsius | 4.64 % |
-| propagated to **radiative power** (∝ T⁴) | **8.54 %** |
+| spread, absolute | 4.4 K |
+| relative, in kelvin — the physical figure | 0.90 % |
+| propagated to **radiative power** (∝ T⁴) | **3.6 %** |
 
 * **Sufficient for combustion-regime discrimination.** Smouldering (~300 °C) and
-  flaming (~800 °C) sit 8× and 57× the spread away from the 220 °C retrieval
-  here. Nothing about that separation is threatened by 10 K.
-* **Not negligible for fire radiative power.** FRP goes as T⁴, so 2.07 % in
-  temperature becomes **8.54 %** in radiated power — and FRP is a standard
-  derived product, so anyone taking these temperatures downstream inherits that
-  without it being obvious.
+  flaming (~800 °C) sit 18× and 132× the spread away from this retrieval.
+* **Small but not free for fire radiative power.** FRP goes as T⁴, so 0.90 % in
+  temperature becomes 3.6 % in radiated power — better than the 8.5 % the
+  hand-picked constants implied, and still worth stating for anyone taking these
+  temperatures downstream.
 
-The Celsius row is included only because it is the number a reader is likely to
-compute by eye, and it reads more than twice as large as the physically
-meaningful one. Radiative quantities are defined on absolute temperature, so
-2.07 % is the figure that propagates.
+### Where ε comes from, stated precisely
 
-Full material identification (Objective 2) **upgrades** that prior where
-co-registered hyperspectral imagery exists. It is not a precondition, and
-stating it as one would create a dependency this architecture cannot satisfy:
+**Emissivity is derived from measured hemispherical reflectance via Kirchhoff's
+law, ε(λ) = 1 − R(λ), valid for opaque surfaces at local thermodynamic
+equilibrium.** That is how ASTER and the LST&E literature derive emissivity
+routinely, so it is sound rather than a compromise — but it is *an inference
+from a published measurement*, not a measurement, and is labelled that way
+everywhere it surfaces. The library contains **no emissivity spectra at all**:
+all 3,451 entries are reflectance (3,323) or transmittance (128).
 
-* Objective 2 runs on hyperspectral **reflectance**, Objective 4 on **thermal**.
-  Gating one on the other requires cross-modal co-registration, which FR-9.10
-  treats as usually unavailable — it is why fusion defaults to *independent*
-  mode and raises `UnregisteredInputError` rather than fusing unaligned inputs
-  at pixel level.
-* There is no thermal-only escape either. Separating temperature from emissivity
-  within the thermal branch needs **multiple thermal bands** (TES), and FLAME 3's
-  radiometric TIFF is single-channel.
+Two filters the relation requires, both enforced at build time:
 
-So the honest statement is that a scene-level prior suffices, material ID
-sharpens it where alignment happens to exist, and single-band retrieval reports
-its assumption either way. That keeps the finding without requiring an alignment
-the pipeline does not have.
+* **Hemispherical geometry only.** Kirchhoff relates directional emissivity to
+  directional absorptivity, so the 929 bidirectional entries do not qualify.
+* **Opaque samples only.** For a transmitting sample ε = 1 − R − T, so the 129
+  transmittance entries are excluded rather than run through 1 − R.
 
-### Why this is still the thermal branch's real contribution
+### The conversion is verified on this library, not assumed
 
-§11 showed a threshold detects fire perfectly. It cannot do this. Detection needs
-only that hot pixels be hot; retrieval needs to know what class of thing is
-emitting, and that is a question radiometry is necessary for and a threshold
-cannot reach.
+Derived ε for materials whose LWIR emissivity is well established:
 
-### What is reported, and what is refused
+| material | derived ε | n | expected | |
+|---|---|---|---|---|
+| water | 0.984 | 9 | 0.96 – 1.00 | ✓ |
+| vegetation | 0.954 | 549 | 0.94 – 1.00 | ✓ |
+| concrete | 0.944 | 6 | 0.85 – 0.97 | ✓ |
+| brass | 0.137 | 15 | 0.02 – 0.30 | ✓ |
 
-* **A missing ε has a second source.** Kirchhoff's law gives ε(λ) = 1 − R(λ)
-  for an opaque surface at thermal equilibrium, so an LWIR *reflectance*
-  measurement of a material yields its emissivity directly. That matters because
-  char and ash — the materials a burned scene is mostly made of — are the least
-  commonly measured emissivity entries, and are the likeliest gaps in any
-  library subset.
-* **The mode is named:** `assumed-emissivity (single-band)`. Single-band data
-  cannot separate temperature from emissivity — that needs multiple bands — so
-  the assumption is unavoidable here and is labelled rather than hidden.
-* **Unlisted materials get a range, never a point estimate** (§11 edge case 11).
-  The default ε = 0.95 carries its stated 0.85–0.98 band into a 23.4 K spread,
-  so a reader sees how much of the number is assumption.
+**This check earned its place immediately.** The first run used aluminium as the
+metal and returned ε = 0.937 — wildly wrong, and flagged out of range. The cause
+was that its only two matches were *black gloss paint on an aluminium substrate*:
+the word appeared in the free-text `Description` field, describing what the
+sample was mounted on rather than what was measured. Matching now uses typed
+fields and the filename taxonomy only, and `Description` is excluded. Without
+the validation, a paint spectrum would have entered the library as a metal.
+
+### Limitations
+
+* **Temperature.** These are laboratory spectra at **ambient temperature**,
+  applied to fire pixels at 220–600 °C. LWIR emissivity is reasonably stable
+  with temperature for most of these materials, but **char and soot during
+  active combustion are the least certain case — and char is the primary
+  material in a burning scene.** The ε used for the hottest pixels is the one
+  with the weakest claim to apply at their temperature.
+* **Single band.** Separating temperature from emissivity properly needs
+  multiple thermal bands (TES). FLAME 3's radiometric TIFF is single-channel, so
+  the assumption is unavoidable and is named in the output as
+  `assumed-emissivity (single-band)`.
+* **Ash is absent** from the library at LWIR coverage. Acceptable here: FLAME 3
+  is *active* wildfire — char, flame and unburned vegetation — whereas ash
+  dominates post-burn scenes, which this work does not score against. If ash is
+  ever needed, cite a published value explicitly rather than substituting
+  vegetation.
+
+### What is refused
+
+* **Unlisted materials get a range, never a point estimate** (§11 edge case 11),
+  and the fallback is the **in-class** mean — computed with the counterexample
+  excluded, so an unidentified patch of a wildfire scene is not handed an
+  emissivity that no part of that scene has.
 * **Bounds are not inverted.** Higher ε means less correction and therefore a
   *lower* temperature; swapping that would leave the central estimate correct
-  while reversing the error bars, which no downstream check would catch. Pinned
-  by test.
-* **Non-radiometric input is refused end to end.** The negative fixture
-  (`thermal_images_equip`, 8-bit false colour) raises rather than returning a
-  fabricated temperature, exercised on real files and not only in unit tests.
+  while reversing the error bars, which no downstream check would catch.
+* **Non-radiometric input is refused end to end**, exercised on the 8-bit
+  `thermal_images_equip` fixture rather than only in unit tests.
 
 ### Eq. 5 is validated against an independent implementation
 
@@ -831,13 +836,13 @@ three independent ways:
 | Wien displacement law | where its peak sits | rel. 1e-3 |
 | Stefan–Boltzmann by integration | the area under it | rel. 1e-8 |
 
-The Stefan–Boltzmann check needed log-spaced sampling to get there. Linear
-sampling with 2,000,000 points still truncated enough long-wavelength tail to
-leave a 1.5e-4 error, where 200,000 log-spaced points give 4e-10 — loosening the
-tolerance instead would have produced a test tuned to its own sampling error
-rather than to the physics.
+The Stefan–Boltzmann check needed log-spaced sampling. Linear sampling with
+2,000,000 points still truncated enough long-wavelength tail to leave a 1.5e-4
+error, where 200,000 log-spaced points give 4e-10 — loosening the tolerance
+instead would have produced a test tuned to its own sampling error rather than
+to the physics.
 
-Reproduce with `python scripts/thermal_retrieval.py`.
+Reproduce with `python scripts/build_speclib.py && python scripts/thermal_retrieval.py`.
 
 ---
 
@@ -857,6 +862,7 @@ configs and commands listed here.
 | §7 band50 α sweep (the one to quote) | `results/m2-band50/ablations.json` | — |
 | §11 FLAME 3 baseline saturation | `scripts/thermal_baseline.py` | — |
 | §13 Eq. 5 retrieval | `results/thermal/flame3_retrieval.json` via `scripts/thermal_retrieval.py` | — |
+| §13 emissivity library | `results/speclib_build.json` via `scripts/build_speclib.py` | — |
 | §10 train-on-test-scene | `results/m2/train_on_test_scene.json` via `scripts/train_on_test_scene.py` | — |
 | §8 Salinas zero-anomaly | `results/salinas-zero-anomaly_20260823-163509` | `86f4b5c9576a` |
 | §9 corpus PCA timing, stability spectrum | `BandReducer.fit_streaming` on the 1,040-crop corpus | — |
