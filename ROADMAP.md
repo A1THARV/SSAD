@@ -29,7 +29,7 @@ Every task cites the PRD requirement it satisfies, so the PRD stays the spec and
 
 ### Environment fact that must be fixed first
 
-`SSAD/` is **not its own git repository** — the enclosing repo root is `C:\Users\ACER`, currently on branch `feature/redis-caching` with commits from an unrelated dashboard project. Committing prototype code from here would write into the wrong history. Task 0.1 is `git init` inside `SSAD/`.
+`SSAD/` was **not its own git repository** — it sat inside an enclosing repo belonging to an unrelated project, so committing prototype code from here would have written into the wrong history. Task 0.1 is `git init` inside `SSAD/`. (Resolved: `SSAD/` is now its own repository.)
 
 ---
 
@@ -64,7 +64,7 @@ These four decisions leak into every module. Fixing them once, first, is what ke
 
 | # | Task | Done when |
 |---|---|---|
-| 0.1 | `git init` in `SSAD/`; `.gitignore` for `data/`, `results/`, `.venv/`, `__pycache__/` | `git status` inside `SSAD/` shows a clean repo rooted here, not at `C:\Users\ACER` |
+| 0.1 | `git init` in `SSAD/`; `.gitignore` for `data/`, `results/`, `.venv/`, `__pycache__/` | `git status` inside `SSAD/` shows a clean repo rooted here, not in the enclosing directory |
 | 0.2 | `pyproject.toml`, `src/pipeline/` layout per PRD §6 | `pip install -e .` succeeds; `import pipeline` works from any cwd |
 | 0.3 | `config.py` — YAML → dataclass loader, config hashing, `set_seeds()` | Round-trip test: load `salinas.yaml`, assert typed fields; same config → same hash |
 | 0.4 | `errors.py` — the exception hierarchy above | — |
