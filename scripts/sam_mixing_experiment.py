@@ -120,6 +120,43 @@ LIBRARY_SIZES = (5, 10, 15)
 FULL_MINERAL_LIBRARY = True
 
 
+def baselines(labels_of_drawn_class) -> dict:
+    """Chance and majority-class rates for a balanced draw over some OTHER label.
+
+    The draw is balanced over **species**, so a species-level chance of
+    1/n_species is honest. It is *not* honest at family level: families hold
+    wildly different numbers of species (silicate 70, tungstate 1), so under a
+    species-balanced draw P(family) is proportional to that count, and the bar a
+    family-level result must clear is the **majority family**, not 1/n_families.
+
+    Reporting 1/16 = 0.0625 for families would have repeated exactly the error
+    caught at §14's species level, where a uniform chance rate hid a
+    majority-class baseline the result sat below.
+    """
+    from collections import Counter
+
+    hist = Counter(labels_of_drawn_class.values())
+    total = sum(hist.values())
+    top_label, top_n = hist.most_common(1)[0]
+    return {
+        "n_classes": len(hist),
+        "uniform": 1.0 / len(hist),
+        "majority": top_n / total,
+        "majority_label": top_label,
+        "histogram": dict(hist.most_common()),
+    }
+
+
+def family_of_species(species, families) -> dict:
+    """Map each species to its family, so the draw's implied prior can be found."""
+    from collections import Counter
+
+    seen: dict[str, Counter] = {}
+    for sp, fa in zip(species, families):
+        seen.setdefault(sp, Counter())[fa] += 1
+    return {sp: c.most_common(1)[0][0] for sp, c in seen.items()}
+
+
 def load_library(path: Path = CURATED):
     if not path.is_file():
         raise DataUnavailableError(
@@ -492,12 +529,21 @@ def main(argv=None) -> int:
         print("  " + " " * 26 + "".join(f"{a:>8.2f}" for a in ABUNDANCES)
               + "    <- target abundance")
 
+        # The draw is balanced over SPECIES, so the family prior is whatever
+        # that implies -- not uniform. Silicates hold 70 species, tungstate 1.
+        fam_base = baselines(family_of_species(fl_species, fl_families))
+        print(f"  family baselines under a species-balanced draw: "
+              f"uniform 1/{fam_base['n_classes']} = {fam_base['uniform']:.4f}, "
+              f"MAJORITY ('{fam_base['majority_label']}') = {fam_base['majority']:.4f}")
+        print(f"  -> a family result must clear {fam_base['majority']:.4f}, not "
+              f"{fam_base['uniform']:.4f}")
+
         arms = [
-            # label,                    labels,      uniform SNR, chance
-            ("species, uniform SNR",    fl_species,  None,        1 / n_species),
-            ("species, AVIRIS SNR",     fl_species,  weights,     1 / n_species),
-            ("FAMILY, uniform SNR",     fl_families, None,        1 / n_families),
-            ("FAMILY, AVIRIS SNR",      fl_families, weights,     1 / n_families),
+            # label,                  labels,      weights, chance to beat
+            ("species, uniform SNR",  fl_species,  None,    1 / n_species),
+            ("species, AVIRIS SNR",   fl_species,  weights, 1 / n_species),
+            ("FAMILY, uniform SNR",   fl_families, None,    fam_base["majority"]),
+            ("FAMILY, AVIRIS SNR",    fl_families, weights, fam_base["majority"]),
         ]
         for label, labels, w, chance in arms:
             row = []
@@ -508,15 +554,20 @@ def main(argv=None) -> int:
                           band_weights=w)
                 row.append(acc)
                 report["accuracy"].setdefault("full_library", {})[f"{label}|a={a}"] = acc
+            beats = "".join("  " if v is None else ("+" if v > chance else "-")
+                            for v in row)
             print(f"  {label:<24}" + "".join(f"{v:>8.3f}" for v in row)
-                  + f"   (chance {chance:.4f})")
+                  + f"   (bar {chance:.4f})  {beats}")
 
         report["full_library_meta"] = {
             "n_spectra": int(fl_spectra.shape[0]),
             "n_species": int(n_species),
             "n_families": int(n_families),
             "chance_species": 1.0 / n_species,
-            "chance_family": 1.0 / n_families,
+            "family_baseline_uniform": fam_base["uniform"],
+            "family_baseline_majority": fam_base["majority"],
+            "family_majority_label": fam_base["majority_label"],
+            "family_histogram": fam_base["histogram"],
             "family_source": "ECOSTRESS 'Class' field",
             "snr_profile": "AVIRIS-like: peak VNIR, declining SWIR, "
                            "troughs at 1400 and 1900 nm water vapour",

@@ -1012,28 +1012,73 @@ than one imposed here.
 
 Full range, nominal 20 dB, 253 species / 16 families:
 
-| arm | chance | a = 1.0 | 0.75 | 0.50 | 0.30 | 0.20 | 0.10 | 0.05 |
+| arm | bar to clear | a = 1.0 | 0.75 | 0.50 | 0.30 | 0.20 | 0.10 | 0.05 |
 |---|---|---|---|---|---|---|---|---|
 | species, uniform SNR | 0.0040 | 0.964 | 0.896 | 0.780 | 0.592 | 0.364 | 0.152 | 0.048 |
 | **species, AVIRIS SNR** | 0.0040 | **0.904** | **0.748** | **0.576** | **0.372** | **0.184** | **0.068** | **0.024** |
-| family, uniform SNR | 0.0625 | 0.952 | 0.916 | 0.888 | 0.700 | 0.540 | 0.312 | 0.176 |
-| **family, AVIRIS SNR** | 0.0625 | **0.936** | **0.832** | **0.748** | **0.484** | **0.324** | **0.204** | **0.096** |
+| family, uniform SNR | **0.2767** | 0.952 | 0.916 | 0.888 | 0.700 | 0.540 | 0.312 | *0.176* |
+| **family, AVIRIS SNR** | **0.2767** | **0.936** | **0.832** | **0.748** | **0.484** | **0.324** | *0.204* | *0.096* |
 
-**The bottom two rows are the ones Objective 2 should be reported on** — realistic
-library, realistic SNR — and they say two different useful things:
+*Italicised cells fall **below** the trivial baseline.*
 
-* **Species identification degrades steeply with abundance**: 0.904 resolved,
-  0.576 at half a pixel, 0.068 at a tenth. Still 17× chance at a = 0.10, so real
-  information is present, but not a number to act on alone.
-* **Family identification holds up roughly three times better sub-pixel**: 0.204
-  against 0.068 at a = 0.10. A system that answers *"some sulfate"* for a
-  tenth-of-a-pixel target is right one time in five and useful; the same system
-  naming a species is right one time in fifteen.
+### The family baseline is 0.2767, not 1/16 — and that changes the conclusion
 
-The chance-relative picture inverts, and both framings belong in the paper:
-species identification is 17× chance at a = 0.10 while family is 3.3×, because
-there are 253 species and 16 families. Species is the harder problem and the more
-impressive ratio; family is the more usable answer.
+An earlier draft reported family chance as 1/16 = 0.0625 and claimed family
+identification "holds up roughly three times better sub-pixel". **Both were
+wrong**, for the same reason the species-level baseline was wrong two revisions
+earlier.
+
+The draw is balanced over **species**, so the implied family prior is
+proportional to how many species each family holds — and mineral taxonomy
+guarantees that is nowhere near uniform:
+
+| family | species | P(family) |
+|---|---|---|
+| **silicate** | **70** | **0.2767** |
+| igneous | 38 | 0.1502 |
+| sedimentary | 30 | 0.1186 |
+| metamorphic | 26 | 0.1028 |
+| sulfate | 20 | 0.0791 |
+| … 11 more | 1–14 each | ≤ 0.0553 |
+
+So a family-level result must clear **0.2767** — always answer "silicate" — not
+0.0625. Against that bar:
+
+* Family identification beats the trivial strategy down to **a ≈ 0.20** (0.324
+  against 0.277, a margin of only 1.17×).
+* At **a = 0.10 it scores 0.204, *below* the 0.2767 baseline.** At a = 0.05,
+  0.096, far below.
+
+**The "3× better sub-pixel" claim does not survive.** What survives is narrower
+and still worth reporting: coarsening from species to family buys real accuracy
+in the **majority-abundance** regime — 0.748 against 0.576 at a = 0.50 — and buys
+nothing at all sub-pixel, where a constant answer does better.
+
+This is the third time in this document that a uniform chance rate concealed a
+majority-class baseline the result sat below (§14 species draw, §3 visible-only
+at 0.185 against 0.231, and now families). The pattern is specific enough to
+state as a rule: **whenever a draw is balanced over one label and scored on
+another, the second label's prior is whatever the first implies, and the
+majority-class rate is the only honest bar.**
+
+### What Objective 2 can claim
+
+Scoped to what the measurements support, at realistic SNR against a 253-species
+library:
+
+| regime | species | family | claim |
+|---|---|---|---|
+| resolved (a = 1.0) | 0.904 | 0.936 | **identification works** |
+| majority (a ≥ 0.50) | 0.576 | 0.748 | **identification works, family more so** |
+| minority (a ≈ 0.20–0.30) | 0.184–0.372 | 0.324–0.484 | marginal; family barely clears its baseline |
+| sub-pixel (a ≤ 0.10) | 0.068 | 0.204 | **not a capability** — species near-useless, family below baseline |
+
+**The defensible claim is identification of resolved or majority-abundance
+anomalies.** Sub-pixel behaviour is reported as a measured limit, not as degraded
+performance: at a = 0.10 species-level identification is right once in fifteen
+and family-level is worse than a constant answer. Calling that "weak
+identification" would overstate it; it is the absence of the capability, located
+precisely.
 
 ### The SWIR advantage survives a realistic SNR profile
 
@@ -1098,6 +1143,48 @@ tables sharing the `full / a = 0.10 / 20 dB` configuration now all read
 
 Reproduce with `python scripts/sam_mixing_experiment.py`.
 
+### 14.3 The secondary, run deliberately where the primary says it will fail
+
+SAM applied to HAD100's real detections, **framed as a consistency check between
+the two experiments rather than as a demonstration**. HAD100's anomalies are a
+median of **26 pixels in a 64×64 crop (0.62 %)**, so individual anomalous pixels
+sit at sub-pixel to near-pixel abundance — exactly the regime §14 measures
+species-level accuracy of 0.068 at a = 0.10 and 0.024 at a = 0.05.
+
+The prediction is therefore that these labels cannot be trusted. Measured over
+100 scenes and 3,567 anomalous pixels:
+
+| | |
+|---|---|
+| **low-confidence flag rate** (angle > 0.25 rad) | **0.960** |
+| median best-match angle | **1.72 rad (99°)** |
+| p5 / p95 best-match angle | 0.28 / 2.75 rad |
+| top-1 stability within a scene | median 0.750, min 0.286 |
+
+**96 % of anomalous pixels are flagged low-confidence, and the median best match
+sits 99° from anything in the library.** The §11 edge-case-7 mechanism fires
+almost everywhere, which is the correct behaviour: HAD100's targets are **fabric
+panels**, the library holds minerals, and the true answer is "none of these".
+
+The two experiments agree. §14's controlled measurement predicts that sub-pixel
+species identification is unreliable; the real-data run produces spectra that no
+library entry comes close to, and says so through the flag rather than through a
+confident label.
+
+**What is deliberately not reported as a result:** the top-1 material names. They
+exist — gypsum modal in 36 scenes, feldspar in 30, dolomite in 22 — and a table
+of them would look like identification. It would be an artefact of forcing a
+top-1 choice from a library that contains nothing resembling the target. They are
+shown only so the scatter is visible, and the angle distribution is the finding.
+
+This is the outcome the §3 prediction anticipated in advance: a weak SAM result
+on HAD100 indicts the benchmark's fit to Objective 2, not Eq. 4. Having the
+controlled experiment alongside it is what turns "our method did badly here" into
+"our method did badly here, for the reason we predicted, and the safety mechanism
+caught it".
+
+Reproduce with `python scripts/sam_on_had100.py`.
+
 ### 14.4 Why not Cuprite — and a trap worth naming
 
 Cuprite, Nevada is the canonical AVIRIS mineral-mapping site and the standard
@@ -1145,6 +1232,7 @@ configs and commands listed here.
 | §13 Eq. 5 retrieval | `results/thermal/flame3_retrieval.json` via `scripts/thermal_retrieval.py` | — |
 | §13 emissivity library | `results/speclib_build.json` via `scripts/build_speclib.py` | — |
 | §14 SAM mixing experiment | `results/sam_mixing_experiment.json` via `scripts/sam_mixing_experiment.py` | — |
+| §14.3 SAM on real HAD100 detections | `results/sam_on_had100.json` via `scripts/sam_on_had100.py` | — |
 | §10 train-on-test-scene | `results/m2/train_on_test_scene.json` via `scripts/train_on_test_scene.py` | — |
 | §8 Salinas zero-anomaly | `results/salinas-zero-anomaly_20260823-163509` | `86f4b5c9576a` |
 | §9 corpus PCA timing, stability spectrum | `BandReducer.fit_streaming` on the 1,040-crop corpus | — |

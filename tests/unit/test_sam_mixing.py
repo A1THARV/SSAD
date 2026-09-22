@@ -1,7 +1,7 @@
 """Invariants of the controlled mixing experiment.
 
 The experiment is synthetic, so its conclusions are only as good as its
-construction. These pin the four construction errors that were actually made
+construction. These pin the five construction errors that were actually made
 while building it, each of which produced a plausible but meaningless table.
 """
 
@@ -19,6 +19,9 @@ from sam_mixing_experiment import (  # noqa: E402
     ABLATION_SNRS_DB,
     cell_seed,
     snr_weights,
+    baselines,
+    family_of_species,
+    load_full_mineral_library,
     BAND_SUBSETS,
     add_noise,
     background_spectrum,
@@ -238,3 +241,47 @@ def test_weighted_and_uniform_runs_do_not_share_a_seed():
     base = dict(subset_name="full", abundance=0.3, snr_db=20.0,
                 remove_background=True, n_materials=15)
     assert cell_seed(**base, base=0) != cell_seed(**base, base=7919)
+
+
+# --------------------------------------------------------------------------
+# Construction error 5: a uniform chance rate hiding a majority-class baseline
+# --------------------------------------------------------------------------
+
+
+def test_family_baseline_is_not_uniform_under_a_species_balanced_draw():
+    # The third occurrence of this failure in the project. Balancing the draw
+    # over SPECIES makes 1/n_species honest at species level, but the implied
+    # FAMILY prior is proportional to how many species each family holds -- and
+    # mineral taxonomy is nowhere near uniform. Reporting 1/16 hid a
+    # majority-family baseline the result actually sat below.
+    species_to_family = {f"sp{i}": ("silicate" if i < 70 else "other") for i in range(100)}
+    base = baselines(species_to_family)
+    assert base["uniform"] == pytest.approx(0.5)          # 2 families
+    assert base["majority"] == pytest.approx(0.70)        # but 70/100 are silicate
+    assert base["majority_label"] == "silicate"
+    assert base["majority"] > base["uniform"], (
+        "the majority rate is the bar; a uniform rate would understate it"
+    )
+
+
+def test_family_of_species_collapses_duplicate_spectra():
+    # Each species must contribute once to the family histogram, however many
+    # spectra it has, or the prior reflects sampling rather than taxonomy.
+    species = np.array(["quartz", "quartz", "quartz", "calcite"])
+    families = np.array(["silicate", "silicate", "silicate", "carbonate"])
+    mapping = family_of_species(species, families)
+    assert mapping == {"quartz": "silicate", "calcite": "carbonate"}
+    assert baselines(mapping)["majority"] == pytest.approx(0.5)
+
+
+def test_the_real_family_baseline_exceeds_uniform_by_a_wide_margin():
+    # On the actual library: silicate holds 70 of 253 species, so the bar is
+    # 0.2767 rather than 1/16 = 0.0625 -- a factor of 4.4, and enough to move a
+    # reported result from "3x better" to "below chance".
+    lib = load_full_mineral_library()
+    if lib is None:
+        pytest.skip("ECOSTRESS library absent")
+    _, _, species, families = lib
+    base = baselines(family_of_species(species, families))
+    assert base["majority_label"] == "silicate"
+    assert base["majority"] > 4 * base["uniform"]
