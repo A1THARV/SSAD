@@ -42,3 +42,9 @@ Desktop.ini
 # Claude Code machine-local settings (session temp paths, per-machine allowlists).
 # settings.json is shared; settings.local.json is not.
 .claude/settings.local.json
+
+# The paper draft. Deliberately NOT tracked: it was committed once, then removed
+# from all history with git-filter-repo before the repo could be shared. Keeping
+# it ignored means the strip does not have to be repeated.
+research paper v2.pdf
+*.pdf
