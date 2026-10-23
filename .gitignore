@@ -48,3 +48,10 @@ Desktop.ini
 # it ignored means the strip does not have to be repeated.
 research paper v2.pdf
 *.pdf
+
+# ...but the paper's own figures ARE tracked. They are vector PDFs by
+# requirement (R3: vector, 8 pt minimum at 3.5 in), so the blanket *.pdf rule
+# above would have silently dropped the one deliverable it was least safe to
+# drop. Re-included explicitly rather than by narrowing the rule, so the reason
+# the exception exists stays next to it.
+!figures/*.pdf

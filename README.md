@@ -143,12 +143,15 @@ what the benchmark's own evaluation script reports.
 | **Fused, α = 0.5** | **0.9843** |
 
 **10th of 20** against the published ranking, ahead of the classical family
-(KIFD, QLRX, GRX, LRX) and every deep-learning entry (AutoAD 0.9688, LREN 0.9583,
-RGAE 0.9003).
+(KIFD, QLRX, GRX, LRX) and of three of the seven deep-learning entries — AutoAD
+0.9688, LREN 0.9583, RGAE 0.9003. It is **behind the other four**: AET-KCSR
+0.9948, AET 0.9925, WeaklyAD-B 0.9887, WeaklyAD-A 0.9862. "Ahead of every
+deep-learning entry" would be false; AET and AET-KCSR are the benchmark authors'
+own Vision Transformer, labelled *(Ours)* in their Fig. 1.
 
 That placement belongs to the *fused system*. The autoencoder alone (0.9619) sits
-below AutoAD — this work does not beat the benchmark's deep entries with a better
-autoencoder, it beats them by fusing a weak one with a strong RX branch.
+below AutoAD — this work does not beat any deep entry with a better autoencoder,
+it beats three of them by fusing a weak one with a strong RX branch.
 
 ### 3.2 The equations are verified against independent implementations
 
@@ -172,14 +175,19 @@ Measured in both directions on the same sensor and scenes:
 
 | | best window | worst | all 276 bands |
 |---|---|---|---|
-| **Detection** | visible (455–700 nm) **0.9799** | SWIR 0.9162 | 0.9647 |
-| **Identification** | SWIR (1500–2450 nm) **0.580** | visible 0.180 | 0.412 |
+| **Detection** (RX mAUC, real HAD100) | visible (455–700 nm) **0.9799** | SWIR 0.9162 | 0.9647 |
+| **Identification** (a = 0.10, AVIRIS SNR, 253 species) | SWIR (1500–2450 nm) **0.076** | visible 0.020 | 0.068 |
 
-Two non-obvious consequences. **More spectral data can make performance worse** —
-below a target abundance of ~0.20, dropping 150 of 276 bands nearly doubles
-identification accuracy. And **which bands are diagnostic is a property of the
-task**, not the sensor: the same pixels read for different purposes want opposite
-ends of the spectrum.
+**Which bands are diagnostic is a property of the task**, not the sensor: the same
+pixels read for different purposes want opposite ends of the spectrum. SWIR beats
+visible for identification at every sub-pixel abundance (*z* = +1.97 to +6.07)
+while visible beats SWIR for detection.
+
+An earlier version of this README also claimed *more spectral data can make
+performance worse*. **That is withdrawn.** It came from a 15-material subset;
+at the full 253 species with a realistic SNR profile, SWIR-only is never
+significantly better than all 276 bands and the full range wins outright above
+a = 0.30. `RESULTS.md` §14 carries the retraction and the *z*-tests.
 
 ### 3.4 Thermal — and an honest negative result
 
@@ -246,35 +254,59 @@ findings that overturned earlier assumptions.
 
 ## 5. Running it
 
+### 5.1 Environment
+
 ```bash
+python -m venv .venv && .venv/Scripts/activate      # Windows; bin/activate on POSIX
+pip install -r requirements-lock.txt                # exact versions behind every number
+pip install torch==2.5.1 --index-url https://download.pytorch.org/whl/cu121
 pip install -e ".[test]"
-python scripts/download_data.py --verify    # what is present, what is missing
-python -m pytest -q
+python scripts/download_data.py --verify            # what is present, what is missing
+python -m pytest -q                                 # 494 tests, ~2 min
 ```
+
+`requirements-lock.txt` pins the interpreter and library versions the reported
+results were produced under, and documents the MKL/OpenMP workaround described in
+§6. `pyproject.toml` carries looser floors for ordinary development; the lock
+file is what to use when reproducing numbers. CPU-only works — drop the `torch`
+line above and set `autoencoder.device: cpu`.
 
 Datasets are **not** in this repository. `download_data.py` fetches what it can
 and, for account-gated sources, prints the dataset page, the exact path to drop
 the file at, and which milestone it blocks — a hand-placed file passes
 verification on the next run and the pipeline behaves identically.
 
-| source | size | needed for |
+| source | size | auto? | needed for |
+|---|---|---|---|
+| HAD100 (AVIRIS-NG) | 3.75 GB | yes | detection benchmark |
+| HAD100 baselines | 0.1 GB | yes | the 19-method comparison |
+| ABU, Salinas | small | yes | cross-sensor test, zero-anomaly fixture |
+| FLAME 3 CV subset | 7.5 GB | **manual** — IEEE DataPort account | thermal branch |
+| ECOSTRESS spectral library | 0.13 GB | **manual** — JPL order form | material ID and the ε prior |
+
+### 5.2 One command per table and figure
+
+Each command below regenerates one reported result, with the number it must
+produce. A mismatch is a bug, not a seed.
+
+| result | command | expected |
 |---|---|---|
-| HAD100 (AVIRIS-NG) | 3.75 GB | detection benchmark |
-| HAD100 baselines | 0.1 GB | the 19-method comparison |
-| ABU, Salinas | small | cross-check, zero-anomaly fixture |
-| FLAME 3 CV subset | 7.5 GB | thermal branch |
-| ECOSTRESS spectral library | 0.13 GB | material ID and the ε prior |
+| §1 headline detection | `python -m pipeline.cli.run_hyperspectral --config configs/had100_band50.yaml` | RX 0.9835, AE 0.9619, fused 0.9843 (seed 0) |
+| §7 ablation table | `python scripts/run_ablations.py` | 6 variants × 2 configs |
+| §7a paired test + α by CV | `python scripts/revision_stats.py` | fused−RX *p* = 0.266 (n.s.); α per fold [0.9, 0.8, 0.8, 0.9, 0.8]; held-out 0.9874 ± 0.0051 |
+| §7b seed variance | `python scripts/revision_seed_variance.py` | seeds 0–4 × 6 variants × 2 configs, ~5 h GPU |
+| §7c cross-sensor (ABU) | `python scripts/revision_abu.py` | 13 scenes, 7 distinct band counts, ~2 h GPU |
+| §9 benchmark ranking | `python scripts/revision_benchmark_table.py` | 10th of 20; 7 of 19 baselines deep-learning |
+| §11 thermal baseline | `python scripts/thermal_baseline.py` | max-pixel AUC 1.0000 over 738 frames |
+| §13 emissivity + Eq. 5 | `python scripts/thermal_retrieval.py` | within-class 4.4 K, across-class 656.3 K (149×) |
+| §14 identification | `python scripts/sam_mixing_experiment.py` | 15-material uniform-SNR grid |
+| computational cost | `python scripts/revision_cost.py` | medians over images, 3 warm-up runs excluded |
+| Fig. 2, Fig. 3, scatter | `python scripts/revision_figures.py` | vector PDFs into `figures/` |
+| evidence tables F1–F3, H1 | `python scripts/revision_tables.py` | `results/revision/f_h_tables.md` |
+| **full reproduction check** | `python scripts/revision_fresh_clone_test.py` | clones, installs, tests, re-runs, diffs |
 
-```bash
-# Detection, scored against the published baselines
-python -m pipeline.cli.run_hyperspectral --config configs/had100_band50.yaml
-
-# Eq. 5 retrieval on real fire pixels, with the refusal path exercised
-python scripts/thermal_retrieval.py
-
-# Controlled sub-pixel identification experiment
-python scripts/sam_mixing_experiment.py
-```
+Fig. 1 is drawn in TikZ in the paper source and is deliberately not generated
+here. Fig. 4 was deleted at revision.
 
 Every run writes `results/<run_id>/` containing `metrics.json`,
 `config_used.yaml`, `config_hash.txt` and `command.txt`. The hash is taken over
@@ -325,8 +357,10 @@ verifies it is bit-identical rather than trusting it.
 
 Benchmarks and libraries are consumed, never re-implemented.
 
-- Li et al., *Hyperspectral Anomaly Detection: A Survey and Benchmark*,
-  IEEE TGRS 61, 2023. doi:10.1109/TGRS.2023.3258067
+- Li, Wang, Xiao, Ling, Lin and An, *You Only Train Once: Learning a General
+  Anomaly Enhancement Network With Random Masks for Hyperspectral Anomaly
+  Detection*, IEEE TGRS 61, 2023, pp. 1–18. doi:10.1109/TGRS.2023.3258067,
+  arXiv:2303.18001 — introduces HAD100
 - Hopkins et al., *FLAME 3: Radiometric Thermal UAV Wildfire Imagery*,
   arXiv:2412.02831. doi:10.21227/w0mz-aq48
 - Meerdink et al., *The ECOSTRESS Spectral Library v1.0*, RSE 230:111196, 2019

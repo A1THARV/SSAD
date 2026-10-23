@@ -13,8 +13,11 @@ That removes the two ways a comparison like this usually goes wrong -- a typo in
 transcription, and a silent metric mismatch (pooled AUC against per-image mAUC
 reads as a ~0.01 difference that is really a definition difference).
 
-Cite: Li et al., "Hyperspectral Anomaly Detection: A Survey and Benchmark",
-IEEE TGRS 61, 2023, doi:10.1109/TGRS.2023.3258067.
+Cite: Li, Wang, Xiao, Ling, Lin and An, "You Only Train Once: Learning a General
+Anomaly Enhancement Network With Random Masks for Hyperspectral Anomaly
+Detection", IEEE TGRS 61, 2023, pp. 1-18, doi:10.1109/TGRS.2023.3258067
+(arXiv:2303.18001). HAD100 is introduced in that paper; its top two table
+entries, AET and AET-KCSR, are the benchmark authors' own method.
 """
 
 from __future__ import annotations

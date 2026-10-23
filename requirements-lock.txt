@@ -1,0 +1,61 @@
+# Pinned environment for the INDICON 2026 camera-ready results.
+#
+# These are the versions every number in RESULTS.md was produced under, read off
+# the interpreter that produced them rather than copied from pyproject.toml's
+# looser floors.
+#
+#     python -m venv .venv && .venv/Scripts/activate      # Windows
+#     pip install -r requirements-lock.txt
+#     pip install -e .
+#
+# Python 3.12.4 on Windows 11, NVIDIA RTX 3050 Laptop (4 GB VRAM).
+
+numpy==1.26.4
+scipy==1.13.1
+scikit-learn==1.4.2
+matplotlib==3.8.4
+PyYAML==6.0.3
+Pillow==10.3.0
+h5py==3.11.0
+spectral==0.25
+opencv-python==4.11.0
+psutil==5.9.0
+
+# Validation and tooling. astropy is NOT optional for the test suite: it is the
+# independent reference Eq. 5 is checked against (tests/unit/test_planck.py).
+astropy==6.1.0
+pytest==7.4.4
+pypdf==6.16.1
+
+# ---------------------------------------------------------------------------
+# PyTorch is installed from its own index, since the CUDA build is not on PyPI:
+#
+#     pip install torch==2.5.1 --index-url https://download.pytorch.org/whl/cu121
+#
+# CPU-only also works and is supported (PRD §10); the GPU is a speed-up, never a
+# requirement. Resolve the device with `autoencoder.device: auto`.
+torch==2.5.1+cu121
+
+# ---------------------------------------------------------------------------
+# MKL / OpenMP CONFLICT — read this before running anything
+#
+# Anaconda's NumPy links Intel MKL's libiomp5md.dll; PyTorch ships its own,
+# different build of the same DLL. With both loaded, importing torch and then
+# calling ANY MKL-backed NumPy routine — `a.T @ a`, `np.linalg.eigh`, i.e. every
+# line of the PCA path — ABORTS the interpreter with:
+#
+#     OMP: Error #15: Initializing libiomp5md.dll, but found
+#          libiomp5md.dll already initialized.
+#
+# `src/pipeline/runtime.py` sets KMP_DUPLICATE_LIB_OK=TRUE before torch loads,
+# which is the documented-but-unsupported workaround. Intel warns it "may
+# silently produce incorrect results", so it is VERIFIED rather than trusted:
+# tests/unit/test_runtime.py runs the corpus-covariance kernel in two
+# subprocesses — one with torch loaded under the flag, one with NumPy alone —
+# and asserts the covariance and its eigenvalues are bit-identical.
+#
+# Every entry point calls configure_openmp() before importing torch. A script
+# that imports torch first will abort, and that is the reason why.
+#
+# On a non-Anaconda install with a single OpenMP runtime the conflict does not
+# arise and the flag is harmless; test_runtime.py skips itself in that case.

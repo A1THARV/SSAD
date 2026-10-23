@@ -1,0 +1,45 @@
+MIT License
+
+Copyright (c) 2026 Atharv Donadkar
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+-------------------------------------------------------------------------------
+NOTE ON DATASETS
+
+This license covers the SOURCE CODE in this repository only. It does not cover
+and cannot grant any rights in the datasets the code consumes. No dataset files
+are distributed here, by design — each is governed by its own terms and must be
+obtained from its original provider:
+
+  HAD100 (and its baseline result matrices)
+      Li, Wang, Xiao, Ling, Lin and An, IEEE TGRS 61, 2023,
+      doi:10.1109/TGRS.2023.3258067 — https://zhaoxuli123.github.io/HAD100/
+  ABU (Airport-Beach-Urban)
+      Kang et al.; distributed by the authors
+  Salinas
+      AVIRIS / Purdue; distributed via the ehu.eus hyperspectral scene archive
+  FLAME 3
+      Hopkins et al., arXiv:2412.02831, doi:10.21227/w0mz-aq48 — IEEE DataPort
+  ECOSTRESS Spectral Library v1.0
+      Meerdink et al., RSE 230:111196, 2019 — https://speclib.jpl.nasa.gov/
+
+`scripts/download_data.py` fetches what can be fetched and, for account-gated
+sources, prints the provider's page and the exact path to place the file at.
+Redistribution of any of these datasets is the provider's call, not ours.

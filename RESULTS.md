@@ -178,15 +178,36 @@ KSVDD and ahead of the classical family (KIFD, QLRX, GRX, LRX). Behind the kerne
 and transform-based leaders; the four methods above 0.99 are the honest target
 for further work.
 
-**On the deep-learning comparison, stated precisely.** The fused system (0.9843)
-is ahead of AutoAD (0.9688), LREN (0.9583) and RGAE (0.9003). The autoencoder
-*alone* is **0.9619 — below AutoAD**. The paper must attribute this to the fused
-pipeline and not let it read as a claim about the deep component, which §7 shows
-is the weaker half of the fusion.
+**On the deep-learning comparison, stated precisely.** Seven of the nineteen
+baselines are deep-learning-based, by the benchmark paper's own division of the
+field. The fused system (0.9843) is ahead of **three** of them — AutoAD 0.9688,
+LREN 0.9583, RGAE 0.9003 — and **behind four**: AET-KCSR 0.9948, AET 0.9925,
+WeaklyAD-B 0.9887, WeaklyAD-A 0.9862. The autoencoder *alone* is **0.9619 —
+below AutoAD**, i.e. below every deep entry in the table. The paper must
+attribute the placement to the fused pipeline and not let it read as a claim
+about the deep component, which §7 shows is the weaker half of the fusion.
 
-Source: Li et al., *Hyperspectral Anomaly Detection: A Survey and Benchmark*,
-IEEE TGRS 61, 2023, doi:10.1109/TGRS.2023.3258067. Per change C3 the baselines
-are **consumed, not re-implemented**.
+> **Correction (R3).** Earlier revisions of this file and the README said the
+> result was "ahead of every deep-learning entry". That is **false**. It is ahead
+> of three of seven. The two methods at the top of the table, AET and AET-KCSR,
+> are the benchmark authors' own Vision Transformer, marked *(Ours)* in their
+> Fig. 1 — so the strongest deep-learning entries are precisely the ones this
+> work is behind. The category for every row, including the AET and WeaklyAD
+> families, is taken from the paper's own "Comparative Methods" text rather than
+> inferred from the acronym; `scripts/revision_benchmark_table.py` carries the
+> verbatim quotes.
+
+Source: Li, Wang, Xiao, Ling, Lin and An, *You Only Train Once: Learning a
+General Anomaly Enhancement Network With Random Masks for Hyperspectral Anomaly
+Detection*, IEEE TGRS 61, 2023, pp. 1–18, doi:10.1109/TGRS.2023.3258067
+(arXiv:2303.18001). Per change C3 the baselines are **consumed, not
+re-implemented**.
+
+> **Citation correction (R3).** Earlier revisions of this file attached that DOI
+> to the title *Hyperspectral Anomaly Detection: A Survey and Benchmark*. The
+> authors, venue and DOI were right; **the title was fabricated** — no such paper
+> exists. HAD100 is introduced in the "You Only Train Once" paper above, which
+> matters for reading the table: its top two entries are that paper's own method.
 
 ---
 
@@ -370,8 +391,12 @@ fusion adds, so the band50 sweep is the one the paper should quote.
 | **0.50** | **0.9843** | **0.9778** |
 | 0.60 | 0.9861 | 0.9796 |
 | 0.75 | 0.9880 | 0.9814 |
-| 0.90 | **0.9882** | 0.9808 |
+| 0.90 | 0.9882 | 0.9808 |
 | 1.00 | 0.9835 | 0.9749 |
+
+This table is **diagnostic only**. Every cell is computed on the 100 images being
+reported, so no α may be selected from it — see the retirement note below and the
+cross-validated selection in §7a.
 
 Moving to the stronger RX branch does what it should: the optimum shifts toward
 α = 1 (**0.75 → 0.90**) and the marginal gain at that optimum shrinks
@@ -384,12 +409,17 @@ headline actually uses, fusion at the a priori α = 0.5 buys **+0.0008** over RX
 alone. The fusion story is weaker at the reported operating point than I first
 stated, and the earlier figure was flattered by its baseline.
 
-**On the 0.9882.** That is the post-hoc ceiling at α = 0.90, and it is *not*
-claimed as a result — α was chosen by reading this table, which was computed on
-the 100 images being reported. Quoting it as the headline would be exactly the
-test-set tuning this project refuses elsewhere. It is recorded because the shape
-of the curve is informative and because hiding it would be worse; it would rank
-6th of 20 if it were legitimate, and it is not.
+**The 0.9882 at α = 0.90 is retired (R3).** Earlier revisions carried it as a
+"post-hoc ceiling", disclaimed but still quoted, and still occasionally read as
+though it bounded what the method can do. It does not bound anything: α was
+chosen by reading the row of this table that was computed on the 100 images being
+reported, which is the test-set tuning this project refuses everywhere else. A
+disclaimer attached to a number does not make the number reportable. It is
+withdrawn — not softened — and **no result in this work is quoted at α = 0.90**.
+
+What replaces it is §7a: α selected by grouped cross-validation on training folds
+only and evaluated on held-out images, which gives **0.9874 ± 0.0051**. That is
+lower than 0.9882 and carries a spread, and it is the figure the paper may use.
 
 ### What the autoencoder is worth, per variant
 
@@ -420,6 +450,91 @@ is stronger at band50 (0.9619 vs 0.9522), gaining more from dropping the SWIR
 bands than RX does (+0.0097 against RX's +0.0029). The reconstruction objective
 appears to suffer more from noise-dominated bands than the Mahalanobis distance
 does — consistent with §3, and worth one sentence in the paper.
+
+---
+
+## 7a. Is the fusion gain real? A paired test, and α chosen without the test set
+
+Everything in §1 and §7 is a mean over images. A mean of 0.9843 against 0.9835
+is a difference of 0.0008 and says nothing on its own about whether fusion helps.
+This section asks the two questions that mean cannot answer: **is the gain
+distinguishable from zero**, and **what does α look like when it is not read off
+the images being scored**. Reproduce with `python scripts/revision_stats.py`.
+
+### The unit of analysis is the source scene, not the crop
+
+HAD100 ships 100 crops, but they come from **94 AVIRIS-NG source scenes** — six
+scenes contribute two crops each. Two crops from one scene share background
+statistics, so treating all 100 as independent inflates the sample. The grouping
+is derived from the filenames rather than hard-coded (`source_scene()` in
+`revision_stats.py`), and exactly six doubled scenes are found, as expected.
+Crops within a scene are averaged first, giving 94 independent pairs.
+
+| | 100 crops | 94 source scenes |
+|---|---|---|
+| RX, K=15, corpus basis | 0.9835 | 0.9826 |
+| Autoencoder alone | 0.9619 | 0.9638 |
+| Fused, α = 0.5 | 0.9843 | 0.9836 |
+
+### A2 — paired comparison on the 94 scenes
+
+Wilcoxon signed-rank on the 94 paired AUCs; mean difference with a 95 % bootstrap
+CI over 10 000 resamples **of source scenes**, so the resampling unit matches the
+independence assumption.
+
+| comparison | mean diff | 95 % CI | win/tie/loss | W | *p* | significant |
+|---|---|---|---|---|---|---|
+| fused (α=0.5) − RX | **+0.00096** | [−0.00451, +0.00615] | 48 / 1 / 45 | 1895.0 | **0.266** | **no** |
+| autoencoder − RX | **−0.01882** | [−0.03100, −0.00832] | 24 / 0 / 70 | 1114.0 | **2.47 × 10⁻⁵** | yes, *worse* |
+
+**The fusion gain at α = 0.5 is not statistically significant.** The CI spans
+zero, the sign is near-even across scenes (48 wins to 45 losses), and *p* = 0.27.
+Fusion at the a-priori weight is indistinguishable from RX alone on this
+benchmark. That is the result, and the paper must say so rather than quote
++0.0008 as an improvement.
+
+The second row is the stronger finding and it runs against the method: the
+autoencoder is **significantly worse than RX**, losing on 70 of 94 scenes at
+*p* ≈ 2 × 10⁻⁵. §7 already called it "a weak second opinion"; this quantifies
+that the weakness is not noise.
+
+### B — α selected by grouped 5-fold cross-validation
+
+Five folds grouped by source scene, α chosen on four folds by grid search over
+0.0–1.0 in steps of 0.1, then evaluated on the held-out fold. No scene appears in
+both a selection fold and its held-out fold — asserted in code, not assumed.
+
+| fold | train scenes | held-out scenes | α selected | held-out @ CV α | held-out @ α=0.5 | held-out RX |
+|---|---|---|---|---|---|---|
+| 0 | 75 | 19 | 0.9 | 0.9896 | 0.9892 | 0.9820 |
+| 1 | 75 | 19 | 0.8 | 0.9795 | 0.9708 | **0.9798** |
+| 2 | 75 | 19 | 0.8 | 0.9911 | 0.9869 | 0.9864 |
+| 3 | 75 | 19 | 0.9 | 0.9915 | 0.9879 | 0.9822 |
+| 4 | 75 | 19 | 0.8 | 0.9853 | 0.9830 | 0.9826 |
+| **mean ± std** | | | **0.8–0.9** | **0.9874 ± 0.0051** | **0.9836 ± 0.0075** | **0.9826 ± 0.0024** |
+
+**α selected per fold: [0.9, 0.8, 0.8, 0.9, 0.8].** The selection is stable —
+every fold lands at 0.8 or 0.9, never near 0.5 — which is the one piece of
+support the a-priori weight does *not* get: if 0.5 were right, folds would scatter
+around it. They do not.
+
+Three things to take from this table:
+
+1. **0.9874 ± 0.0051 is the defensible cross-validated number.** It is below the
+   retired 0.9882 and carries a spread four times the gain over RX.
+2. **The gain over RX survives selection but not the spread.** 0.9874 against
+   0.9826 is +0.0048, against a held-out std of 0.0051. Consistent with A2: a
+   real but small effect that a 94-scene benchmark cannot resolve cleanly.
+3. **Fold 1 loses.** At the CV-selected α, held-out fusion (0.9795) is *below* RX
+   on that fold (0.9798). One fold in five where fusion does not help, after
+   honest selection, is the kind of detail the α sweep in §7 hid completely.
+
+### What is retired
+
+The a-priori α = 0.5 row stays, because it is what the headline uses and
+pretending otherwise would be the same error in the other direction. What does
+not stay is any number selected on the images it is reported against — see the
+retirement note in §7.
 
 ---
 
@@ -912,17 +1027,27 @@ Measured in both directions on the same sensor and the same scenes:
 
 | | best window | worst window | full 276 bands |
 |---|---|---|---|
-| **Detection** (§3, RX mAUC) | **visible** 0.9799 | SWIR-ish 0.9162 | 0.9647 |
-| **Identification** (§14, a = 0.10, 20 dB) | **SWIR** 0.580 | visible 0.180 | 0.412 |
+| **Detection** (§3, RX mAUC, real data) | **visible** 0.9799 | SWIR-ish 0.9162 | 0.9647 |
+| **Identification** (a = 0.10, AVIRIS SNR, 253 species) | **SWIR** 0.076 | visible 0.020 | 0.068 |
 
 **The claim that generalises:** which part of the spectrum carries the signal is a
 property of the *task*, not of the sensor or the scene. Detection of these
 targets lives at 455–700 nm; identification of their material lives at
-1500–2450 nm. The same pixels, read for different purposes, want different bands.
+1500–2450 nm. SWIR beats visible for identification at every sub-pixel abundance
+(*z* = +1.97 to +6.07), while visible beats SWIR for detection. The same pixels,
+read for different purposes, want different bands. That is the finding.
 
-**The claim that needs scoping:** *"more spectral data makes performance worse"*
-is true **only at or below a target abundance of about 0.20**, and stating it
-without that qualifier would make it falsifiable by anyone rerunning at a = 0.5.
+**The claim that is withdrawn:** *"more spectral data makes performance worse."*
+A previous revision scoped it to a ≤ 0.20. Under the realistic configuration —
+253 species, AVIRIS-like SNR — it does not hold at **any** abundance: SWIR-only
+is never significantly better than the full 276 bands (*z* = +0.35 at a = 0.10,
++1.02 at a = 0.05), and the full range is significantly better at a ≥ 0.30. The
+effect was produced by the 15-material subset. The scoped version is retired
+along with the unscoped one; see the correction subsection below.
+
+The table immediately below is the **15-material, uniform-SNR** measurement,
+retained because §12 uses it and because the construction errors it exposed are
+worth keeping on the record. It is not the configuration to quote.
 
 | SNR 20 dB | a = 1.0 | 0.75 | 0.50 | 0.30 | 0.20 | 0.10 | 0.05 |
 |---|---|---|---|---|---|---|---|
@@ -1080,29 +1205,43 @@ and family-level is worse than a constant answer. Calling that "weak
 identification" would overstate it; it is the absence of the capability, located
 precisely.
 
-### The SWIR advantage survives a realistic SNR profile
+### Correction: "SWIR beats the full range" does **not** survive the realistic configuration
 
-The concern that uniform noise manufactured the result is testable, and it does
-not:
+An earlier revision of this section was headed *"The SWIR advantage survives a
+realistic SNR profile"* and reported SWIR-only beating the full range at low
+abundance, with the relative advantage widening from 1.41× to 1.84×. That was
+measured on the **15-material subset**. Re-run at the full library size — 253
+species, chance 0.0040 — with the AVIRIS-like SNR profile and real HAD100
+background, it reverses. 250 trials per cell, balanced draw
+(`python scripts/revision_figures.py`, data in `results/revision/g_fig2_data.json`):
 
-| | a = 0.30 | 0.20 | 0.10 | 0.05 |
-|---|---|---|---|---|
-| **uniform SNR** — full | 0.872 | 0.684 | 0.412 | 0.204 |
-| **uniform SNR** — swir | 0.764 | **0.744** | **0.580** | **0.388** |
-| **AVIRIS SNR** — full | 0.600 | 0.412 | 0.204 | **0.180** |
-| **AVIRIS SNR** — swir | 0.544 | **0.512** | **0.376** | 0.156 |
+| bands | a = 1.0 | 0.75 | 0.50 | 0.30 | 0.20 | 0.10 | 0.05 |
+|---|---|---|---|---|---|---|---|
+| **full** (276) | **0.904** | **0.748** | **0.576** | **0.372** | 0.184 | 0.068 | 0.024 |
+| swir (126) | 0.376 | 0.392 | 0.272 | 0.172 | 0.148 | 0.076 | 0.040 |
+| vnir (101) | 0.608 | 0.400 | 0.184 | 0.112 | 0.048 | 0.012 | 0.004 |
+| visible (50) | 0.320 | 0.152 | 0.068 | 0.044 | 0.032 | 0.020 | 0.012 |
 
-The crossover stays near a ≈ 0.20 and SWIR's *relative* advantage at a = 0.10
-actually widens slightly (1.41× → 1.84×). What the realistic profile does is
-lower everything: SWIR-only at a = 0.10 falls from 0.580 to 0.376.
+Two-proportion *z* on SWIR − full: **−12.30, −8.04, −6.88, −5.02, −1.08, +0.35,
++1.02** across the row. The full range is significantly better at a ≥ 0.30, and
+**SWIR is never significantly better than the full range at any abundance.** The
+1.41×/1.84× advantage was an artefact of the small subset, where discarding bands
+removed confusers that 253 species put back.
 
-So the finding is not an artefact of the noise model — **but the uniform-SNR
-numbers are an upper bound on absolute performance**, and the wavelength-weighted
-rows are the ones to quote. Two caveats remain on the profile itself: it is a
-shape fitted to published AVIRIS behaviour rather than a calibration of a
-specific instrument, and it is applied to a *synthetic* mixture. §3's detection
-result needs no such correction, having been measured on real AVIRIS data where
-the instrument's SNR penalty was already present.
+**What does survive is the band comparison, which is the claim §14 actually
+needs.** SWIR beats the visible range at every sub-pixel abundance — *z* = +6.03,
++6.07, +4.61, +4.53, +2.93, +1.97 for a = 0.75 down to 0.05 — and the two are
+indistinguishable only at a = 1.0 (*z* = +1.31). So identification does draw on
+SWIR where detection draws on the visible; the mirror symmetry in §14's summary
+table holds. What fails is the stronger version, that *restricting* to SWIR
+helps. It does not: use every band available.
+
+Three caveats stand on the profile itself: it is a shape fitted to published
+AVIRIS behaviour rather than a calibration of a specific instrument; it is
+applied to a *synthetic* mixture; and the uniform-SNR numbers elsewhere in this
+section are an upper bound on absolute performance. §3's detection result needs
+no such correction, having been measured on real AVIRIS data where the
+instrument's SNR penalty was already present.
 
 ### Three construction errors, each of which produced a plausible table
 
