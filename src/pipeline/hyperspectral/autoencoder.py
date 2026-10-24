@@ -477,6 +477,17 @@ def sample_corpus_patches(
 # --------------------------------------------------------------------------
 
 
+#: Fraction of the training patches withheld to pick the epoch to keep.
+#:
+#: Training patches are drawn from anomaly-free background and carry no labels,
+#: so this split leaks nothing: it selects an epoch by reconstruction loss on
+#: held-out *background*, never by detection accuracy on a test scene. The same
+#: rule covers both regimes -- corpus patches for HAD100, same-scene patches for
+#: ABU's per-scene training -- because the split is taken over whatever patches
+#: the caller passes.
+VALIDATION_FRACTION = 0.1
+
+
 @dataclass
 class TrainingHistory:
     """What a training run actually did, for the results record."""
@@ -488,17 +499,29 @@ class TrainingHistory:
     loss: list[float] = field(default_factory=list)
     mse: list[float] = field(default_factory=list)
     sam: list[float] = field(default_factory=list)
+    val_loss: list[float] = field(default_factory=list)
+    best_epoch: int | None = None
+    best_val_loss: float | None = None
+    n_train: int | None = None
+    n_val: int | None = None
     peak_vram_gb: float | None = None
 
     def as_dict(self) -> dict:
         return {
             "epochs": self.epochs,
             "n_patches": self.n_patches,
+            "n_train": self.n_train,
+            "n_val": self.n_val,
             "device": self.device,
             "seconds": round(self.seconds, 2),
             "loss": [round(v, 8) for v in self.loss],
             "mse": [round(v, 8) for v in self.mse],
             "sam_rad": [round(v, 8) for v in self.sam],
+            "val_loss": [round(v, 8) for v in self.val_loss],
+            "best_epoch": self.best_epoch,
+            "best_val_loss": (
+                None if self.best_val_loss is None else round(self.best_val_loss, 8)
+            ),
             "peak_vram_gb": (
                 None if self.peak_vram_gb is None else round(self.peak_vram_gb, 3)
             ),
@@ -573,20 +596,67 @@ def train_autoencoder(
     scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
 
     data = torch.as_tensor(patches, dtype=torch.float32)
+
+    # Hold out a slice to choose WHICH epoch's weights to keep. Without this the
+    # function returned the last epoch unconditionally, and the loss is not
+    # monotone: across five seeds the final epoch sat 1.4x to 61x above the same
+    # run's best, so one seed in five was saved mid-spike and scored 0.83 where
+    # its siblings scored 0.93-0.97. The split is seeded, so it is part of the
+    # run's determinism rather than a new source of variation.
+    g = torch.Generator().manual_seed(seed)
+    n_val = int(round(n * VALIDATION_FRACTION))
+    # Below ~10 patches a 10% split rounds to nothing, and a validation set of
+    # one is noise; such runs keep the old last-epoch behaviour rather than
+    # selecting on a meaningless number.
+    n_val = n_val if n_val >= 2 and n - n_val >= 1 else 0
+    perm = torch.randperm(n, generator=g)
+    val_idx, train_idx = perm[:n_val], perm[n_val:]
+    n_train = int(train_idx.numel())
+    val_data = data[val_idx] if n_val else None
+
     history = TrainingHistory(
-        epochs=cfg.epochs, n_patches=n, device=dev, seconds=0.0
+        epochs=cfg.epochs, n_patches=n, device=dev, seconds=0.0,
+        n_train=n_train, n_val=n_val,
     )
     if dev == "cuda":
         torch.cuda.reset_peak_memory_stats()
 
-    g = torch.Generator().manual_seed(seed)
+    def epoch_loss(subset) -> float:
+        """Mean composite loss over a subset, without touching the gradients.
+
+        Weighted by batch size, not averaged over batches. A trailing short
+        batch would otherwise carry the same weight as a full one, making the
+        number depend on ``batch_size`` -- unacceptable in a quantity whose
+        only job is to be comparable across epochs and runs. (The training
+        curve above is still the plain per-batch mean it has always been, so
+        the as-run numbers stay comparable.)
+        """
+        model.eval()
+        tot, seen = 0.0, 0
+        with torch.no_grad():
+            for lo in range(0, subset.shape[0], cfg.batch_size):
+                batch = subset[lo : lo + cfg.batch_size].to(dev, non_blocking=True)
+                with torch.amp.autocast("cuda", enabled=use_amp):
+                    recon = model(batch)
+                total, _, _ = composite_loss(
+                    model.centre_spectra(batch),
+                    model.centre_spectra(recon),
+                    cfg.lam,
+                    projector,
+                )
+                tot += float(total.item()) * batch.shape[0]
+                seen += batch.shape[0]
+        model.train()
+        return tot / max(seen, 1)
+
+    best_state = None
     start = time.perf_counter()
     model.train()
     for epoch in range(cfg.epochs):
-        order = torch.randperm(n, generator=g)
+        order = train_idx[torch.randperm(n_train, generator=g)]
         sums = np.zeros(3)
         batches = 0
-        for lo in range(0, n, cfg.batch_size):
+        for lo in range(0, n_train, cfg.batch_size):
             batch = data[order[lo : lo + cfg.batch_size]].to(dev, non_blocking=True)
             opt.zero_grad(set_to_none=True)
             with torch.amp.autocast("cuda", enabled=use_amp):
@@ -610,11 +680,26 @@ def train_autoencoder(
         history.loss.append(sums[0] / batches)
         history.mse.append(sums[1] / batches)
         history.sam.append(sums[2] / batches)
+
+        if n_val:
+            v = epoch_loss(val_data)
+            history.val_loss.append(v)
+            if history.best_val_loss is None or v < history.best_val_loss:
+                history.best_val_loss = v
+                history.best_epoch = epoch + 1
+                best_state = {
+                    k: t.detach().to("cpu", copy=True)
+                    for k, t in model.state_dict().items()
+                }
         if progress:
+            tail = f"  val {history.val_loss[-1]:.6f}" if n_val else ""
             print(
                 f"  epoch {epoch + 1:>3}/{cfg.epochs}  loss {history.loss[-1]:.6f}  "
-                f"mse {history.mse[-1]:.6f}  sam {history.sam[-1]:.6f} rad"
+                f"mse {history.mse[-1]:.6f}  sam {history.sam[-1]:.6f} rad{tail}"
             )
+
+    if best_state is not None:
+        model.load_state_dict({k: t.to(dev) for k, t in best_state.items()})
 
     history.seconds = time.perf_counter() - start
     if dev == "cuda":

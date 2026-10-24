@@ -66,9 +66,26 @@ from run_ablations import prepared_scenes  # noqa: E402
 
 CONFIG = "configs/had100_band50.yaml"
 K_GRID = (5, 8, 10, 15, 20, 30, 50)
-K_REPORTED = 15
+K_REPORTED = 15             # what the paper reported
+K_MODAL = 8                 # what cross-validation selects
 FOLD_SEED = 0
-GRX_PUBLISHED = 0.9403      # HAD100's own GRX row, band50 column
+
+#: Scored from the benchmark's own shipped result matrices by
+#: scripts/had100_baselines.py. READ, never typed: an earlier revision of this
+#: script hard-coded 0.9403 for published GRX from memory, which is wrong by
+#: 0.04 and produced a decomposition claiming ~90% of the margin came from
+#: preprocessing. The real figure is 0.97986 and the repo had it all along.
+BASELINES_JSON = Path("results/had100_baselines.json")
+
+
+def published_grx() -> float:
+    if not BASELINES_JSON.is_file():
+        raise SystemExit(
+            f"{BASELINES_JSON} is missing; run scripts/had100_baselines.py first. "
+            "This value is not hard-coded on purpose.")
+    table = json.loads(BASELINES_JSON.read_text(encoding="utf-8"))
+    table = table.get("table", table)
+    return float(table["GRX"]["band50"])
 
 
 def sliced(full: BandReducer, k: int) -> BandReducer:
@@ -120,39 +137,48 @@ def main(argv=None) -> int:
     # --- the three variants -------------------------------------------------
     variants = {}
     print("variant                       crop mAUC   scene mAUC")
-    raw = rx_of(cubes)
-    variants["raw50"] = raw
-    per_scene = rx_of([
-        BandReducer(n_components=K_REPORTED, variance=cfg.preprocess.pca_variance)
-        .fit(c).transform(c) for c in cubes])
-    variants["per_scene_pca15"] = per_scene
+    variants["raw50"] = rx_of(cubes)
+    for k in (K_REPORTED, K_MODAL):
+        variants[f"per_scene_pca{k}"] = rx_of([
+            BandReducer(n_components=k, variance=cfg.preprocess.pca_variance)
+            .fit(c).transform(c) for c in cubes])
 
     auc_by_k = {}
     for k in K_GRID:
-        red = sliced(full, k)
-        maps = rx_of([red.transform(c) for c in cubes])
+        maps = rx_of([sliced(full, k).transform(c) for c in cubes])
         auc_by_k[k] = per_image_auc(maps, truths)
-        if k == K_REPORTED:
-            variants["corpus_pca15"] = maps
+        if k in (K_REPORTED, K_MODAL):
+            variants[f"corpus_pca{k}"] = maps
 
     labels = {"raw50": "(a) raw 50 bands = GRX",
               "per_scene_pca15": "(b) per-scene PCA-15",
-              "corpus_pca15": "(c) corpus PCA-15"}
+              "corpus_pca15": "(c) corpus PCA-15",
+              "per_scene_pca8": "(b8) per-scene PCA-8",
+              "corpus_pca8": "(d) corpus PCA-8 = CV K"}
     aucs, scene_aucs = {}, {}
     for key, maps in variants.items():
         a = per_image_auc(maps, truths)
         s, scene_keys = by_scene(a, groups)
         aucs[key], scene_aucs[key] = a, s
         print(f"{labels[key]:<30} {np.nanmean(a):.4f}      {s.mean():.4f}")
-    print(f"\nHAD100's published GRX, band50 column: {GRX_PUBLISHED:.4f}")
+    grx = published_grx()
+    print(f"\nHAD100's published GRX, band50 column: {grx:.6f}  "
+          f"(read from {BASELINES_JSON})")
+    print(f"  (a) differs from it by {np.nanmean(aucs['raw50']) - grx:+.6f}; "
+          "the band preset is equivalent to taking the first 50 bands, so the "
+          "residual is the 99.9th-percentile clip that the reproduction does "
+          "not apply.")
 
     # --- pairwise tests on the 94 scenes ------------------------------------
     print(f"\n=== paired tests on {len(scene_keys)} source scenes ===")
     tests = []
-    for other in ("raw50", "per_scene_pca15"):
+    for base, other in (("corpus_pca15", "raw50"),
+                        ("corpus_pca15", "per_scene_pca15"),
+                        ("corpus_pca8", "raw50"),
+                        ("corpus_pca8", "per_scene_pca8")):
         rng = np.random.default_rng(7)
-        t = paired_test(scene_aucs["corpus_pca15"], scene_aucs[other],
-                        "corpus PCA-15", labels[other], rng)
+        t = paired_test(scene_aucs[base], scene_aucs[other],
+                        labels[base], labels[other], rng)
         tests.append(t)
         print(f"\n  {t['comparison']}")
         print(f"    mean diff {t['mean_difference']:+.5f}   95% CI "
@@ -161,12 +187,23 @@ def main(argv=None) -> int:
               f"W = {t['wilcoxon_statistic']:.1f},  p = {t['wilcoxon_p']:.4g}")
         print(f"    => {'SIGNIFICANT' if t['significant_at_0.05'] else 'NOT significant'}")
 
-    total = scene_aucs["corpus_pca15"].mean() - scene_aucs["raw50"].mean()
-    trunc = scene_aucs["per_scene_pca15"].mean() - scene_aucs["raw50"].mean()
-    share = trunc / total if total else float("nan")
-    print(f"\n  total gain (a)->(c): {total:+.5f}")
-    print(f"  truncation alone (a)->(b): {trunc:+.5f}  = {share * 100:.0f}% of it")
-    print(f"  corpus basis alone (b)->(c): {total - trunc:+.5f}")
+    decomp = {}
+    for k, bl, cl in ((K_REPORTED, "per_scene_pca15", "corpus_pca15"),
+                      (K_MODAL, "per_scene_pca8", "corpus_pca8")):
+        total = scene_aucs[cl].mean() - scene_aucs["raw50"].mean()
+        trunc = scene_aucs[bl].mean() - scene_aucs["raw50"].mean()
+        share = trunc / total if total else float("nan")
+        decomp[k] = {"total_raw_to_corpus": float(total),
+                     "truncation_only": float(trunc),
+                     "corpus_basis_only": float(total - trunc),
+                     "truncation_share": float(share)}
+        print(f"\n  decomposition at K={k} (scene level):")
+        print(f"    total, raw -> corpus       {total:+.5f}")
+        print(f"    truncation alone           {trunc:+.5f}  = {share * 100:.0f}%")
+        print(f"    corpus basis alone         {total - trunc:+.5f}")
+    print(f"\n  gap to PUBLISHED GRX at K={K_MODAL} (crop level): "
+          f"{np.nanmean(aucs['corpus_pca8']) - grx:+.5f}  -- all of it from PCA, "
+          "since (a) already reproduces published GRX.")
 
     # --- K by grouped CV ----------------------------------------------------
     print(f"\n=== K by {N_FOLDS}-fold CV grouped by source scene ===")
@@ -213,18 +250,14 @@ def main(argv=None) -> int:
     report = {
         "config": CONFIG,
         "n_crops": len(names), "n_source_scenes": len(scene_keys),
-        "published_grx_band50": GRX_PUBLISHED,
+        "published_grx_band50": grx,
         "variants": {k: {"crop_mauc": float(np.nanmean(v)),
                          "scene_mauc": float(scene_aucs[k].mean()),
                          "label": labels[k]}
                      for k, v in aucs.items()},
         "paired_tests": tests,
-        "gain_decomposition": {
-            "total_a_to_c": float(total),
-            "truncation_a_to_b": float(trunc),
-            "corpus_basis_b_to_c": float(total - trunc),
-            "truncation_share_of_total": float(share),
-        },
+        "gain_decomposition_by_k": {str(k): v for k, v in decomp.items()},
+        "gap_to_published_grx_at_k8_crop": float(np.nanmean(aucs["corpus_pca8"]) - grx),
         "k_selection": {
             "grid": list(K_GRID), "n_folds": N_FOLDS, "fold_seed": FOLD_SEED,
             "k_selected_per_fold": ks,

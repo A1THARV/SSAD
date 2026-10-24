@@ -100,7 +100,22 @@ CATEGORIES = {
     "AET-KCSR":    ("deep learning",        "AETNet + KCSR detector (paper's own)",        "fig1"),
 }
 
-OURS = ("this work -- fused, alpha = 0.5", 0.9843)
+#: This work's entry, read from the final HAD100 table rather than typed.
+#:
+#: The quoted figure is the crop-level mAUC over all 100 images at the
+#: cross-validated alpha, averaged over seeds 0-4. Alpha is selected
+#: out-of-fold, so no image contributes to the weight it is scored under --
+#: which is what makes this comparable to the published rows at all.
+OURS_LABEL = "this work -- fused, CV alpha"
+OURS_SOURCE = Path("results/revision/b_seeds.json")
+
+
+def ours_band50() -> tuple[float, list[float]]:
+    if not OURS_SOURCE.is_file():
+        raise SystemExit(f"{OURS_SOURCE} is missing; run revision_b_seeds.py first.")
+    t = json.loads(OURS_SOURCE.read_text(encoding="utf-8"))["final_table"]
+    crop = t["fused_cv_alpha"]["crop"]
+    return float(crop["mean"]), [float(v) for v in crop["values"]]
 
 
 def main(argv=None) -> int:
@@ -121,7 +136,8 @@ def main(argv=None) -> int:
         for m, v in data.items()
     ]
     uncategorised = [r["method"] for r in rows if r["category"] == "?"]
-    rows.append({"method": OURS[0], "band50": OURS[1], "band100": None,
+    ours_mean, ours_seeds = ours_band50()
+    rows.append({"method": OURS_LABEL, "band50": ours_mean, "band100": None,
                  "band200": None, "category": "statistical + deep learning",
                  "detail": "RX (Eq. 2) fused with a 3D-conv autoencoder (Eq. 1, 3)",
                  "source": "this work", "is_ours": True})
@@ -139,12 +155,20 @@ def main(argv=None) -> int:
     print(table_md)
 
     deep = [r for r in rows if r["category"] == "deep learning"]
-    ahead = [r for r in deep if (r["band50"] or 0) > OURS[1]]
-    behind = [r for r in deep if (r["band50"] or 0) < OURS[1]]
+    ahead = [r for r in deep if (r["band50"] or 0) > ours_mean]
+    behind = [r for r in deep if (r["band50"] or 0) < ours_mean]
     ours_rank = next(i for i, r in enumerate(rows, 1) if r["is_ours"])
 
     print(f"\n{'=' * 72}")
-    print(f"this work ranks {ours_rank} of {len(rows)} on band50 at {OURS[1]:.4f}")
+    print(f"this work ranks {ours_rank} of {len(rows)} on band50 at "
+          f"{ours_mean:.4f} (mean over seeds {ours_seeds})")
+    others = sorted((r for r in rows if not r["is_ours"]),
+                    key=lambda r: -(r["band50"] or -1))
+    per_seed_rank = [1 + sum(1 for r in others if (r["band50"] or 0) > v)
+                     for v in ours_seeds]
+    print(f"  rank per seed: {per_seed_rank} -- the mean rank is not "
+          "attained by every seed, so the table reports the mean and "
+          "this spread together.")
     print(f"\ndeep-learning entries: {len(deep)} of {len(rows) - 1} baselines")
     print(f"  AHEAD of this work ({len(ahead)}):")
     for r in ahead:

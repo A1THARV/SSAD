@@ -81,8 +81,19 @@ def main(argv=None) -> int:
     p.add_argument("--maps", default="results/revision/maps")
     p.add_argument("--limit", type=int, default=None)
     p.add_argument("--seeds", default=",".join(str(s) for s in SEEDS))
+    p.add_argument(
+        "--variants", default=None,
+        help="comma-separated variant names; default is all of them. The "
+             "revision runs 'baseline' alone, since the ablation deltas (~0.005) "
+             "sit under the fused seed std (0.0158) and are not distinguishable.")
     args = p.parse_args(argv)
     seeds = [int(s) for s in args.seeds.split(",")]
+    wanted = set(args.variants.split(",")) if args.variants else None
+    variants = [v for v in AE_VARIANTS if wanted is None or v[0] in wanted]
+    if wanted and len(variants) != len(wanted):
+        missing = wanted - {v[0] for v in variants}
+        raise SystemExit(f"unknown variant(s): {sorted(missing)}; "
+                         f"available: {[v[0] for v in AE_VARIANTS]}")
 
     map_dir = Path(args.maps)
     map_dir.mkdir(parents=True, exist_ok=True)
@@ -99,7 +110,7 @@ def main(argv=None) -> int:
         truths = [g for _, _, g in scenes]
         print(f"  {len(scenes)} scenes", flush=True)
 
-        widths = sorted({v[1] for v in AE_VARIANTS})
+        widths = sorted({v[1] for v in variants})
         pcas = {
             k: corpus_reducer(
                 replace(cfg, preprocess=replace(cfg.preprocess, pca_n_components=k)),
@@ -143,7 +154,7 @@ def main(argv=None) -> int:
             "variants": {},
         }
 
-        for vname, k, latent, whiten, lam, sam_domain in AE_VARIANTS:
+        for vname, k, latent, whiten, lam, sam_domain in variants:
             rows = {"ae": [], "fused": [], "train_seconds": [], "peak_vram_gb": []}
             print(f"\n  --- {vname}  (K={k}, latent={latent}, whiten={whiten}, "
                   f"lam={lam}, sam={sam_domain})", flush=True)

@@ -20,7 +20,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
 from pipeline.config import HyperspectralConfig, ThermalConfig, load_config  # noqa: E402
+from pipeline.hyperspectral.autoencoder import VALIDATION_FRACTION  # noqa: E402
+from revision_cost import AE_BATCH  # noqa: E402
+from revision_rx_validate import K_MODAL as RX_K_CV  # noqa: E402
 
 R = Path("results")
 OUT = Path("results/revision")
@@ -169,7 +174,11 @@ def table_implementation() -> str:
         ("Latent dimension", f"{ae.latent_dim}  (Fig. 1 requires d << K)"),
         ("Output activation", "none (linear) — PCA scores are signed"),
         ("Patch size", f"{ae.patch_size} x {ae.patch_size} spatial"),
-        ("PCA components K", f"{hs.preprocess.pca_n_components}"),
+        ("PCA components K, autoencoder input",
+         f"{hs.preprocess.pca_n_components}"),
+        ("PCA components K, RX branch",
+         f"{RX_K_CV} (selected by scene-grouped 5-fold CV, unanimous across "
+         f"folds; the reported value was {hs.preprocess.pca_n_components})"),
         ("Band selection", f"{hs.preprocess.good_bands_preset} "
                            f"(band50 protocol) / {hs276.preprocess.good_bands_preset} "
                            f"(276-band)"),
@@ -186,6 +195,12 @@ def table_implementation() -> str:
                                       f"1,040 anomaly-free crops"),
         ("Training regime", "corpus (HAD100) / per-scene self-supervised (ABU)"),
         ("Mixed precision", f"{'on' if ae.amp else 'off'} (torch.autocast)"),
+        ("Checkpoint selection",
+         f"{VALIDATION_FRACTION:.0%} of training patches held out; the weights "
+         "returned are the epoch with the lowest held-out reconstruction loss"),
+        ("Inference batch (Eq. 1)",
+         f"{AE_BATCH} patches (fastest of 256/1024/2048/4096; 4096 is 12x "
+         "slower, exceeding 4 GB VRAM)"),
         ("Input whitening", f"{'on' if ae.whiten_input else 'off'}"),
         ("Fusion", f"{hs.score_fusion.mode}, alpha = {hs.score_fusion.alpha} "
                    f"a priori; cross-validated alpha reported separately"),

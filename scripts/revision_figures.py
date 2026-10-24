@@ -166,7 +166,7 @@ def draw_fig2(data: dict, out_dir: Path) -> None:
     ax.set_xlim(0.045, 1.12)
     ax.legend(loc="upper left", handlelength=2.4, borderaxespad=0.2)
     ax.spines[["top", "right"]].set_visible(False)
-    save(fig, out_dir, "fig2_identification_vs_abundance")
+    save(fig, out_dir, "fig2_sam_accuracy")
 
 
 # --------------------------------------------------------------------------
@@ -235,7 +235,7 @@ def draw_fig3(data: dict, out_dir: Path) -> None:
     ax.set_ylabel("frames")
     ax.legend(loc="upper right", borderaxespad=0.2)
     ax.spines[["top", "right"]].set_visible(False)
-    save(fig, out_dir, "fig3_thermal_max_temperature")
+    save(fig, out_dir, "fig3_thermal_maxT")
 
 
 # --------------------------------------------------------------------------

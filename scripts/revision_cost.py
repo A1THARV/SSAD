@@ -43,6 +43,33 @@ from pipeline.cli.run_hyperspectral import cached_patches, corpus_reducer  # noq
 
 WARMUP = 3
 
+#: Inference batch for Eq. 1, confirmed by the sweep below rather than assumed.
+#:
+#: The obvious choice is 4,096 -- a 64x64 crop in one call -- and it is the
+#: WORST of the four: 13,780 ms against 1,136 ms at 1,024, because 4,096 patches
+#: of 15x7x7 through 32/64/128 channels peaks at 4.35 GB on a 4 GB card and
+#: spills. The library default of 1,024 is also the fastest, so the cost
+#: reported here is not an artefact of an unlucky batch size.
+AE_BATCH = 1024
+
+#: Batches to compare, so the reported cost reflects a reasonable
+#: implementation rather than whatever the default happened to be.
+AE_BATCH_SWEEP = (256, 1024, 2048, 4096)
+
+
+def sync(device: str) -> None:
+    """Make an async CUDA queue finish before the clock is read.
+
+    Without this a GPU timing measures how fast work was *enqueued*. The error
+    map happens to copy to host each batch, which forces a sync anyway, but
+    relying on that would make the number depend on an implementation detail of
+    the function being timed.
+    """
+    if device == "cuda":
+        import torch
+
+        torch.cuda.synchronize()
+
 
 class _Args:
     refit_pca = False
@@ -130,7 +157,8 @@ def main(argv=None) -> int:
         t = time.perf_counter()
         ae_map = reconstruction_error_map(model, reduced,
                                           patch_size=cfg.autoencoder.patch_size,
-                                          device=device)
+                                          batch_size=AE_BATCH, device=device)
+        sync(device)
         ae_t.append(time.perf_counter() - t)
 
         t = time.perf_counter()
@@ -157,6 +185,82 @@ def main(argv=None) -> int:
         print(f"  {r['stage']:<32} {r['median_s'] * 1000:8.1f} ms")
     print(f"\n  inference peak VRAM {inference_peak:.3f} GB   "
           f"host RSS {rss_gb():.2f} GB (delta {rss_gb() - rss0:+.2f})")
+
+    # --- Is the autoencoder's cost an artefact of how it was called? -------
+    #
+    # R2 is entitled to a cost ratio measured against a reasonable
+    # implementation, not against an unlucky default. Three things are checked:
+    # the batch size, where the time actually goes, and which device each
+    # branch ran on.
+    import torch
+
+    from pipeline.hyperspectral.autoencoder import extract_patches
+
+    probe = reducer.transform(mask_and_clip(load_cube(cfg.dataset, paths[0]),
+                                            cfg.preprocess))
+    sweep = {}
+    for bs in AE_BATCH_SWEEP:
+        ts = []
+        for _ in range(WARMUP + 5):
+            t = time.perf_counter()
+            reconstruction_error_map(model, probe,
+                                     patch_size=cfg.autoencoder.patch_size,
+                                     batch_size=bs, device=device)
+            sync(device)
+            ts.append(time.perf_counter() - t)
+        sweep[bs] = float(np.median(ts[WARMUP:]))
+    best_bs = min(sweep, key=sweep.get)
+
+    # Split the winning configuration into its host and device halves.
+    ex_t, fw_t = [], []
+    for _ in range(WARMUP + 5):
+        t = time.perf_counter()
+        patches = extract_patches(probe, cfg.autoencoder.patch_size)
+        ex_t.append(time.perf_counter() - t)
+
+        data = torch.as_tensor(patches, dtype=torch.float32)
+        sync(device)
+        t = time.perf_counter()
+        model.eval()
+        with torch.no_grad():
+            for lo in range(0, data.shape[0], best_bs):
+                model(data[lo:lo + best_bs].to(device))
+        sync(device)
+        fw_t.append(time.perf_counter() - t)
+
+    extract_ms = float(np.median(ex_t[WARMUP:])) * 1000
+    forward_ms = float(np.median(fw_t[WARMUP:])) * 1000
+    n_patches = int(probe.shape[0] * probe.shape[1])
+
+    print(f"\n  autoencoder inference, batch-size sweep "
+          f"({n_patches} patches per image):")
+    for bs, s in sweep.items():
+        mark = "  <- best" if bs == best_bs else ""
+        used = "  (used above)" if bs == AE_BATCH else ""
+        print(f"    batch {bs:<5} {s * 1000:8.1f} ms{mark}{used}")
+    print(f"\n  where the time goes at batch {best_bs}:")
+    print(f"    patch extraction (host, numpy)   {extract_ms:8.1f} ms")
+    print(f"    network forward ({device:<4})            {forward_ms:8.1f} ms")
+    print(f"\n  device per branch:  RX = cpu (numpy/scipy),  "
+          f"autoencoder = {device}")
+    if device == "cuda":
+        print("    RX is CPU-only by implementation, so the ratio below already "
+              "favours the autoencoder.")
+
+    ae_cost = {
+        "batch_sweep_seconds": {str(k): v for k, v in sweep.items()},
+        "best_batch": best_bs,
+        "batch_used_in_pipeline": AE_BATCH,
+        "n_patches_per_image": n_patches,
+        "patch_extraction_host_ms": extract_ms,
+        "network_forward_ms": forward_ms,
+        "forward_device": device,
+        "rx_device": "cpu",
+        "note": ("RX is implemented in numpy and runs on the CPU; the "
+                 "autoencoder runs on the GPU where one is present. The "
+                 "comparison therefore favours the autoencoder, and the "
+                 "measured gap is a lower bound on the gap."),
+    }
 
     # --- Per-scene (Auto-AD style) training, as ABU requires --------------
     abu = load_config(args.abu_config, HyperspectralConfig)
@@ -202,6 +306,7 @@ def main(argv=None) -> int:
         "warmup_excluded": WARMUP,
         "per_image_stages": rows,
         "inference_peak_vram_gb": inference_peak,
+        "autoencoder_inference_fairness": ae_cost,
         "training": {
             "corpus": corpus_train,
             "per_scene_autoad_style": per_scene,

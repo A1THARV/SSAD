@@ -136,22 +136,34 @@ HAD100 is 100 annotated 64×64 AVIRIS-NG crops with 19 published baseline method
 The metric is **mAUC**: per-image AUC-ROC averaged over the 100 images, which is
 what the benchmark's own evaluation script reports.
 
+Autoencoder rows are **mean ± std over seeds 0–4**; RX has no seed.
+
 | branch | mAUC |
 |---|---|
-| RX alone (Eq. 2) | 0.9835 |
-| Autoencoder alone (Eq. 1) | 0.9619 |
-| **Fused, α = 0.5** | **0.9843** |
+| RX alone (Eq. 2), corpus PCA K = 8 | 0.9844 |
+| Autoencoder alone (Eq. 1) | 0.9750 ± 0.0027 |
+| Fused, α = 0.5 | 0.9860 ± 0.0011 |
+| **Fused, cross-validated α** | **0.9890 ± 0.0006** |
 
-**10th of 20** against the published ranking, ahead of the classical family
-(KIFD, QLRX, GRX, LRX) and of three of the seven deep-learning entries — AutoAD
-0.9688, LREN 0.9583, RGAE 0.9003. It is **behind the other four**: AET-KCSR
-0.9948, AET 0.9925, WeaklyAD-B 0.9887, WeaklyAD-A 0.9862. "Ahead of every
-deep-learning entry" would be false; AET and AET-KCSR are the benchmark authors'
-own Vision Transformer, labelled *(Ours)* in their Fig. 1.
+α is selected **out of fold** — each image scored at a weight chosen by the four
+folds that excluded it — and lands on 0.8–0.9, never the a-priori 0.5. K = 8 is
+likewise chosen by cross-validation, not by reading the benchmark's curve.
 
-That placement belongs to the *fused system*. The autoencoder alone (0.9619) sits
-below AutoAD — this work does not beat any deep entry with a better autoencoder,
-it beats three of them by fusing a weak one with a strong RX branch.
+**5th of 20** against the published ranking, behind only AET-KCSR 0.9948, KCSR
+0.9939, CR 0.9929 and AET 0.9925. Per seed the rank is **[5, 5, 6, 5, 6]** — two
+seeds fall behind WeaklyAD-B — so it is quoted with that spread. Of the seven
+deep-learning entries this work is ahead of five and behind two, both the
+benchmark authors' own Vision Transformer. "Ahead of every deep-learning entry"
+would be false.
+
+That placement belongs to the *fused system*. The autoencoder alone is
+**significantly worse than RX on all five seeds** (p from 5.5e−6 to 0.039 over
+94 source scenes) — this work does not beat any baseline with a better
+autoencoder, it wins by fusing a weaker branch with a strong RX branch.
+
+**And the gain does not transfer.** On ABU the same fusion is *significantly
+worse* than RX (−0.0093, p = 0.0215 over 13 scenes). The benefit is a property
+of the method on the benchmark it was developed against. See `RESULTS.md` §7c.
 
 ### 3.2 The equations are verified against independent implementations
 
@@ -291,17 +303,20 @@ produce. A mismatch is a bug, not a seed.
 
 | result | command | expected |
 |---|---|---|
-| §1 headline detection | `python -m pipeline.cli.run_hyperspectral --config configs/had100_band50.yaml` | RX 0.9835, AE 0.9619, fused 0.9843 (seed 0) |
+| §1 headline detection | `python -m pipeline.cli.run_hyperspectral --config configs/had100_band50.yaml` | RX 0.9844 (K=8), AE 0.9750±0.0027, fused CV α 0.9890±0.0006 |
 | §7 ablation table | `python scripts/run_ablations.py` | 6 variants × 2 configs |
-| §7a paired test + α by CV | `python scripts/revision_stats.py` | fused−RX *p* = 0.266 (n.s.); α per fold [0.9, 0.8, 0.8, 0.9, 0.8]; held-out 0.9874 ± 0.0051 |
-| §7b seed variance | `python scripts/revision_seed_variance.py` | seeds 0–4 × 6 variants × 2 configs, ~5 h GPU |
+| §7a paired test + α by CV | `python scripts/revision_b_seeds.py --rx-k 8` | fused−RX p < 5e−9 on 5/5 seeds; α pooled 0.8×17, 0.9×8; held-out 0.9885 ± 0.0045 |
+| §2a RX variants + K by CV | `python scripts/revision_rx_validate.py` | K=8 unanimous; (d) vs (a) p = 0.399; (d) vs (b8) p = 0.0156 |
+| §7c ABU + cross-dataset α | `python scripts/revision_abu_stats.py` | fused−RX p = 0.0215 (worse); α=0.9 from ABU → HAD100 0.9887 ± 0.0003 |
+| §7b seed variance | `python scripts/revision_seed_variance.py --variants baseline` | seeds 0–4 × 2 configs, ~1 h GPU |
+| §7b checkpoint diagnosis | `python scripts/revision_seed4_diag.py` | seed 4 final loss 61× its own best at epoch 18 |
 | §7c cross-sensor (ABU) | `python scripts/revision_abu.py` | 13 scenes, 7 distinct band counts, ~2 h GPU |
-| §9 benchmark ranking | `python scripts/revision_benchmark_table.py` | 10th of 20; 7 of 19 baselines deep-learning |
+| §9 benchmark ranking | `python scripts/revision_benchmark_table.py` | 5th of 20 (per-seed [5,5,6,5,6]); 7 of 19 baselines deep-learning |
 | §11 thermal baseline | `python scripts/thermal_baseline.py` | max-pixel AUC 1.0000 over 738 frames |
 | §13 emissivity + Eq. 5 | `python scripts/thermal_retrieval.py` | within-class 4.4 K, across-class 656.3 K (149×) |
 | §14 identification | `python scripts/sam_mixing_experiment.py` | 15-material uniform-SNR grid |
-| computational cost | `python scripts/revision_cost.py` | medians over images, 3 warm-up runs excluded |
-| Fig. 2, Fig. 3, scatter | `python scripts/revision_figures.py` | vector PDFs into `figures/` |
+| §8a computational cost | `python scripts/revision_cost.py` | RX 2.0 ms vs AE 1149.9 ms per image; medians, 3 warm-ups excluded |
+| Fig. 2, Fig. 3, scatter | `python scripts/revision_figures.py` | `fig2_sam_accuracy.pdf`, `fig3_thermal_maxT.pdf` |
 | evidence tables F1–F3, H1 | `python scripts/revision_tables.py` | `results/revision/f_h_tables.md` |
 | **full reproduction check** | `python scripts/revision_fresh_clone_test.py` | clones, installs, tests, re-runs, diffs |
 

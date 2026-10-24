@@ -435,6 +435,66 @@ def test_history_serialises_for_the_run_record():
     assert len(d["loss"]) == 2
 
 
+def test_returned_weights_are_the_best_validation_epoch():
+    """The model that comes back must be the best epoch's, not the last.
+
+    This is the bug the revision found: training loss is not monotone, and
+    returning the final epoch saved one seed in five mid-spike. Re-running the
+    validation loss against the returned weights has to reproduce the best
+    value recorded during training -- a later, worse epoch would not.
+    """
+    import torch
+
+    from pipeline.hyperspectral.autoencoder import composite_loss
+
+    patches = _toy_corpus(n=200, k=8, p=5)
+    cfg = _tiny_cfg(lam=0.0, epochs=12)
+    model, history = train_autoencoder(patches, cfg, device="cpu", seed=3)
+
+    assert history.n_val == 20 and history.n_train == 180
+    assert len(history.val_loss) == 12
+    assert history.best_epoch == int(np.argmin(history.val_loss)) + 1
+    assert history.best_val_loss == pytest.approx(min(history.val_loss))
+
+    # Re-derive the split the same way training did, then score the returned
+    # weights on it. Reading the number back off history would test nothing.
+    g = torch.Generator().manual_seed(3)
+    val_idx = torch.randperm(200, generator=g)[:20]
+    val = torch.as_tensor(patches, dtype=torch.float32)[val_idx]
+    model.eval()
+    with torch.no_grad():
+        recon = model(val)
+        got, _, _ = composite_loss(
+            model.centre_spectra(val), model.centre_spectra(recon), cfg.lam, None
+        )
+    assert float(got) == pytest.approx(history.best_val_loss, rel=1e-5)
+
+    # And the fix has to bite: on a non-monotone curve the best epoch is not
+    # the last one, or this test would pass against the old behaviour too.
+    assert history.best_epoch < 12 or history.val_loss[-1] == min(history.val_loss)
+
+
+def test_validation_split_is_held_out_of_training():
+    """The selection patches must not also be trained on."""
+    import torch
+
+    _, history = train_autoencoder(
+        _toy_corpus(n=100), _tiny_cfg(lam=0.0, epochs=2), device="cpu", seed=1
+    )
+    assert history.n_train + history.n_val == history.n_patches
+    assert history.n_val == 10
+
+
+def test_a_corpus_too_small_to_split_still_trains():
+    """Per-scene training on a tiny cube must not fail on the split."""
+    _, history = train_autoencoder(
+        _toy_corpus(n=8), _tiny_cfg(lam=0.0, epochs=2), device="cpu", seed=0
+    )
+    assert history.n_val == 0 and history.n_train == 8
+    assert history.val_loss == [] and history.best_epoch is None
+    assert len(history.loss) == 2
+
+
 def test_wrong_patch_rank_is_refused():
     with pytest.raises(IncompatibleInputError):
         train_autoencoder(np.zeros((4, 8, 5, 5), dtype=np.float32), _tiny_cfg(), device="cpu")

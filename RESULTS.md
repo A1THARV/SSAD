@@ -20,41 +20,58 @@ which is what HAD100's `eval_results.py` reports and therefore the only figure
 comparable to its published table. A pooled AUC over all 409,600 pixels is a
 different quantity and is not used.
 
-| Branch | 276 bands | band50 protocol |
+Every autoencoder figure below is a **mean ± std over seeds 0–4**, with the
+median and per-seed values given, because one training run is not a result. RX
+has no seed.
+
+| Branch | crop level (100) | scene level (94) |
 |---|---|---|
-| RX (Eq. 2), per-scene PCA basis | 0.9749 | — |
-| RX (Eq. 2), corpus PCA basis | 0.9806 | 0.9835 |
-| Autoencoder (Eq. 1) alone | 0.9522 | 0.9619 |
-| **Fused, α = 0.5** | 0.9778 | **0.9843** |
+| RX (Eq. 2), corpus PCA **K = 8** | 0.9844 | 0.9837 |
+| RX (Eq. 2), corpus PCA K = 15 | 0.9835 | 0.9826 |
+| Autoencoder (Eq. 1) alone | 0.9750 ± 0.0027 | 0.9745 ± 0.0023 |
+| Fused, α = 0.5 | 0.9860 ± 0.0011 | 0.9854 ± 0.0012 |
+| **Fused, cross-validated α** | **0.9890 ± 0.0006** | **0.9885 ± 0.0007** |
 
-**0.9843 is the headline.** It is the full pipeline — Eq. 1 + Eq. 2 + Eq. 3 fused
-under Fig. 1 stage 5 — at α = 0.5, the fusion weight fixed in the config *before*
-any of the ablations below were run. Nothing in that number was selected on the
-test set.
+**0.9890 ± 0.0006 is the headline**, at the band50 protocol. Per-seed:
+0.9891 / 0.9892 / 0.9886 / 0.9898 / 0.9882, median 0.9891. It is the full
+pipeline — Eq. 1 + Eq. 2 + Eq. 3 under Fig. 1 stage 5 — with **α selected
+out-of-fold**: every image is scored at a weight chosen by the four folds that
+excluded it, so nothing in that number was selected on the image it is reported
+against. §7a has the per-fold α and the paired tests.
 
-Against the published ranking it sits **10th of 20** in the band50 column,
-0.0002 behind KSVDD and ahead of KIFD, QLRX, GRX and LRX. See §3.
+Two choices in that row were made by cross-validation rather than by hand, and
+both differ from what earlier drafts reported. The RX branch uses **K = 8**, not
+15 — grouped CV selects 8 unanimously on all five folds (§2a). And α lands on
+**0.8–0.9**, never the a-priori 0.5.
+
+**Rank: 5th of 20** in the band50 column, behind AET-KCSR 0.9948, KCSR 0.9939,
+CR 0.9929 and AET 0.9925. Per-seed the rank is **[5, 5, 6, 5, 6]** — two seeds
+fall behind WeaklyAD-B (0.9887) — so the rank is reported with that spread and
+not as a fixed position.
 
 That placement belongs to the **fused system**, not to the deep component. The
-autoencoder alone scores 0.9619, which is *below* AutoAD's 0.9688 — so this work
-does not beat the benchmark's deep-learning entries with a better autoencoder. It
-beats them by fusing a weak autoencoder with a strong RX branch, and §7
-quantifies how weak.
+autoencoder alone is **significantly worse than RX on all five seeds**
+(Wilcoxon p from 5.5 × 10⁻⁶ to 0.039 over 94 scenes). This work does not beat
+any baseline with a better autoencoder; it beats five of the seven
+deep-learning entries by fusing a weaker branch with a strong RX branch, and §7a
+quantifies how much weaker.
 
-Fusion buys **+0.0008 over the best single branch** at band50 — measured against
-corpus-basis RX on the same config, which is the honest comparison. (An earlier
-draft quoted +0.0029; that was fusion measured against the *weaker* per-scene RX
-on the 276-band config, and it overstated the gain. §7 has the corrected sweep.)
+Fusion buys **+0.0048 over RX alone** at the cross-validated α (0.9885 vs
+0.9837, scene level), significant on 5 of 5 seeds. At the a-priori α = 0.5 it
+buys +0.0017 and is significant on only 4 of 5. The weight matters more than the
+architecture.
 
 ```
 python -m pipeline.cli.run_hyperspectral --config configs/had100_band50.yaml
-python -m pipeline.cli.run_hyperspectral --config configs/had100.yaml
+python scripts/revision_seed_variance.py --variants baseline   # seeds 0-4
+python scripts/revision_b_seeds.py --rx-k 8                    # the table above
 ```
 
-Note the two columns are not directly comparable branch-for-branch: the 276-band
-config carries `rx.pca_basis: per_scene` (its default when the run was made), so
-its fused row is fused against the *weaker* RX. The band50 config uses the corpus
-basis for both, which is why its fusion delta is the honest one.
+> **These numbers supersede an earlier set, and the difference is a bug, not a
+> retune.** Until the revision, `train_autoencoder` returned the *final* epoch's
+> weights with no checkpoint selection. The training loss is not monotone, so one
+> seed in five was saved mid-spike. §7b gives the as-run numbers, the diagnosis
+> and the fix.
 
 ---
 
@@ -83,6 +100,80 @@ matters most where the 4,096-pixel covariance is closest to ill-conditioned.
 
 Recorded as presets `had100_band50` / `_band100` / `_band200`; see
 `scripts/had100_baselines.py`.
+
+---
+
+## 2a. Where RX's margin over GRX comes from, and how K was chosen
+
+`python scripts/revision_rx_validate.py`. Deterministic and CPU-only; no seed
+appears anywhere in RX.
+
+Two of RX's choices were never justified: the PCA subspace, and its width. Both
+are settled here, and the width changes.
+
+| variant | crop (100) | scene (94) |
+|---|---|---|
+| (a) raw 50 bands = the GRX configuration | 0.9798 | 0.9787 |
+| (b) per-scene PCA-15 | 0.9807 | 0.9798 |
+| (b8) per-scene PCA-8 | 0.9819 | 0.9810 |
+| (c) corpus PCA-15 | 0.9835 | 0.9826 |
+| **(d) corpus PCA-8 = the CV-selected width** | **0.9844** | **0.9837** |
+| published GRX (benchmark's own result matrices) | 0.97986 | — |
+
+| comparison | mean diff | 95 % CI | W/T/L | W | *p* |
+|---|---|---|---|---|---|
+| (d) vs (a) | +0.00498 | [+0.00095, +0.00949] | 43/3/48 | 1880.0 | **0.399** |
+| (d) vs (b8) | +0.00266 | [+0.00102, +0.00458] | 55/2/37 | 1518.0 | **0.0156** |
+| (c) vs (a) | +0.00391 | [+0.00121, +0.00700] | 48/3/43 | 1652.0 | 0.0809 |
+| (c) vs (b) | +0.00283 | [+0.00122, +0.00466] | 57/2/35 | 1370.5 | 0.00277 |
+
+**PCA does not beat raw RX on a typical scene.** (d) vs (a) has the larger mean
+but *loses on more scenes than it wins* (43 to 48) and *p* = 0.40. Its bootstrap
+CI excludes zero because the mean is pulled by a minority of large gains. Both
+are reported; the CI alone would overstate it.
+
+**What is significant is the corpus basis.** (d) vs (b8) — same width, same
+truncation, only the basis differs — gives *p* = 0.016, and (c) vs (b) gives
+*p* = 0.003. Decomposed at scene level:
+
+| | K = 15 | K = 8 |
+|---|---|---|
+| total, raw → corpus | +0.00391 | +0.00498 |
+| truncation alone | +0.00108 (28 %) | +0.00233 (47 %) |
+| **corpus basis alone** | **+0.00283 (72 %)** | **+0.00266 (53 %)** |
+
+This is the measured support for §4 and for Fig. 1's single PCA block.
+
+**K = 15 is not confirmed. Cross-validation selects K = 8, unanimously.** Grouped
+5-fold CV over {5, 8, 10, 15, 20, 30, 50} picks 8 in every fold. R3's objection
+to selecting α on the test set applies to K identically, and K = 15 had been
+chosen with sight of HAD100's own curve.
+
+| | held-out mAUC |
+|---|---|
+| CV-selected K = 8 | **0.9837 ± 0.0024**, median 0.9837 |
+| K = 15 as reported | 0.9826 ± 0.0024, median 0.9822 |
+
+Full-data curve, diagnostic only: K=5 0.9832, **K=8 0.9837**, K=10 0.9831,
+K=15 0.9826, K=20 0.9813, K=30 0.9804, K=50 0.9787 — monotone decreasing past 8.
+
+> **Two corrections (R3).** An earlier revision of this section claimed roughly
+> 90 % of the margin over published GRX came from preprocessing rather than from
+> PCA. That rested on a **fabricated** value for published GRX — 0.9403, typed
+> from memory. The real figure is **0.97986**, and this repository had it all
+> along, in §2 above, in the benchmark table, and in
+> `results/had100_baselines.json`. The decomposition is withdrawn. The gap from
+> published GRX to the headline RX is **+0.0046 at K = 8, all of it from PCA**,
+> and `revision_rx_validate.py` now *reads* the published value and refuses to
+> run without it rather than carrying a literal.
+>
+> Second: variant (a) is not quite the §2 reproduction. (a) applies the
+> pipeline's 99.9th-percentile clip, which the reproduction does not; the band
+> preset is a no-op here, giving results bit-identical to slicing the raw array.
+> Raw first-50 scores **0.979910** against published **0.979857**, so the
+> reproduction holds to four decimal places and the whole 0.9798/0.9799
+> difference is that clip. (a) is kept with the clip so the comparison against
+> (b)–(d) is like-for-like.
 
 ---
 
@@ -139,7 +230,7 @@ matching, the correct response is to evaluate Objective 2 on a scene with
 SWIR-diagnostic targets rather than to conclude Eq. 4 does not work.
 
 Note this also bounds §1's headline honestly: the band50 configuration that
-produces 0.9843 **discards every SWIR band**, so that configuration cannot serve
+produces 0.9890 **discards every SWIR band**, so that configuration cannot serve
 Objective 2 at all. Detection and identification will need different band
 selections from the same pipeline — which the `good_bands_preset` mechanism
 already supports, and which the paper should state rather than leave implicit.
@@ -156,12 +247,12 @@ metric mismatch cannot creep in.
 | 2 | KCSR | 0.9939 | 0.9865 | 0.9860 |
 | 3 | CR | 0.9929 | 0.9859 | 0.9849 |
 | 4 | AET | 0.9925 | 0.9875 | 0.9818 |
-| 5 | WeaklyAD-B | 0.9887 | 0.9838 | 0.9850 |
-| 6 | WeaklyAD-A | 0.9862 | 0.9788 | 0.9773 |
-| 7 | AED | 0.9859 | 0.9645 | 0.9625 |
-| 8 | 2S-GLRT | 0.9853 | 0.9683 | 0.9310 |
-| 9 | KSVDD | 0.9845 | 0.9737 | 0.9706 |
-| **10** | **this work — fused, α = 0.5** | **0.9843** | — | — |
+| **5** | **this work — fused, CV α** | **0.9890 ± 0.0006** | — | — |
+| 6 | WeaklyAD-B | 0.9887 | 0.9838 | 0.9850 |
+| 7 | WeaklyAD-A | 0.9862 | 0.9788 | 0.9773 |
+| 8 | AED | 0.9859 | 0.9645 | 0.9625 |
+| 9 | 2S-GLRT | 0.9853 | 0.9683 | 0.9310 |
+| 10 | KSVDD | 0.9845 | 0.9737 | 0.9706 |
 | 11 | KIFD | 0.9829 | 0.9822 | 0.9774 |
 | 12 | QLRX | 0.9801 | 0.9715 | 0.9682 |
 | 13 | GRX | 0.9799 | 0.9714 | 0.9649 |
@@ -173,19 +264,25 @@ metric mismatch cannot creep in.
 | 19 | PTA | 0.9031 | 0.8976 | 0.8686 |
 | 20 | RGAE | 0.9003 | 0.8876 | 0.8823 |
 
-Tenth of twenty on the column where the baselines are strongest — 0.0002 behind
-KSVDD and ahead of the classical family (KIFD, QLRX, GRX, LRX). Behind the kernel
-and transform-based leaders; the four methods above 0.99 are the honest target
+**Fifth of twenty** on the column where the baselines are strongest, behind only
+AET-KCSR, KCSR, CR and AET. The four methods above 0.99 remain the honest target
 for further work.
+
+**The rank is not stable across seeds, and is reported with that spread.**
+Per-seed the crop-level figure is 0.9891 / 0.9892 / 0.9886 / 0.9898 / 0.9882,
+which ranks **[5, 5, 6, 5, 6]** — two of the five fall behind WeaklyAD-B's
+0.9887. Quoting "5th" without that would be a stronger claim than five runs
+support.
 
 **On the deep-learning comparison, stated precisely.** Seven of the nineteen
 baselines are deep-learning-based, by the benchmark paper's own division of the
-field. The fused system (0.9843) is ahead of **three** of them — AutoAD 0.9688,
-LREN 0.9583, RGAE 0.9003 — and **behind four**: AET-KCSR 0.9948, AET 0.9925,
-WeaklyAD-B 0.9887, WeaklyAD-A 0.9862. The autoencoder *alone* is **0.9619 —
-below AutoAD**, i.e. below every deep entry in the table. The paper must
-attribute the placement to the fused pipeline and not let it read as a claim
-about the deep component, which §7 shows is the weaker half of the fusion.
+field. This work is ahead of **five** of them — WeaklyAD-B 0.9887, WeaklyAD-A
+0.9862, AutoAD 0.9688, LREN 0.9583, RGAE 0.9003 — and **behind two**: AET-KCSR
+0.9948 and AET 0.9925, which are the benchmark authors' own method. The
+autoencoder *alone* is **0.9750**, below WeaklyAD-A, WeaklyAD-B and every row
+above them; §7a shows it is significantly worse than RX alone on all five
+seeds. The paper must attribute the placement to the fused pipeline and never
+let it read as a claim about the deep component.
 
 > **Correction (R3).** Earlier revisions of this file and the README said the
 > result was "ahead of every deep-learning entry". That is **false**. It is ahead
@@ -359,6 +456,17 @@ sign flip lives.
 
 ## 7. Full ablation table
 
+> **Every number in §7 is an AS-RUN number**: one seed, and the final-epoch
+> weights that §7b identifies as a bug. They are kept because they are what
+> earlier drafts reported and because the α-sweep shape is still informative,
+> but **none of them is a result**. §7a carries the corrected table.
+>
+> Two reasons not to read conclusions off this section. The ablation deltas are
+> ~0.005 against a fused seed std of 0.0158 as-run, so they are **not
+> distinguishable from seed noise**, and the paper drops the SAM-domain and
+> whitening findings accordingly. And the α sweep below was computed on the 100
+> images being reported, so no α may be selected from it.
+
 All six autoencoder variants, 100 HAD100 test images, `results/m2/ablations.json`.
 One-at-a-time from the baseline rather than a full factorial.
 
@@ -453,88 +561,255 @@ does — consistent with §3, and worth one sentence in the paper.
 
 ---
 
-## 7a. Is the fusion gain real? A paired test, and α chosen without the test set
+## 7a. Does fusion beat RX? Five seeds, two datasets, and α never chosen on the test set
 
-Everything in §1 and §7 is a mean over images. A mean of 0.9843 against 0.9835
-is a difference of 0.0008 and says nothing on its own about whether fusion helps.
-This section asks the two questions that mean cannot answer: **is the gain
-distinguishable from zero**, and **what does α look like when it is not read off
-the images being scored**. Reproduce with `python scripts/revision_stats.py`.
+Everything in §1 is a mean. This section asks whether the gaps in it survive a
+paired test, whether they survive a change of seed, and what α looks like when it
+is not read off the images being scored. Reproduce with:
 
-### The unit of analysis is the source scene, not the crop
+```
+python scripts/revision_b_seeds.py --rx-k 8        # HAD100, seeds 0-4
+python scripts/revision_abu_stats.py              # ABU, and the cross-dataset α
+```
 
-HAD100 ships 100 crops, but they come from **94 AVIRIS-NG source scenes** — six
-scenes contribute two crops each. Two crops from one scene share background
-statistics, so treating all 100 as independent inflates the sample. The grouping
-is derived from the filenames rather than hard-coded (`source_scene()` in
-`revision_stats.py`), and exactly six doubled scenes are found, as expected.
-Crops within a scene are averaged first, giving 94 independent pairs.
+**Which RX appears inside every fused number.** The RX branch is corpus PCA at
+**K = 8**, the width cross-validation selects (§2a), and the RX baseline each
+branch is tested against is the same K = 8. The autoencoder's own input stays at
+**K = 15**: its patch cache and channel widths are built for that, and changing
+it would be a different experiment rather than this one measured correctly. A
+fused score is therefore RX@K=8 ⊕ AE@K=15 — two independent score maps, which
+need not share a width.
 
-| | 100 crops | 94 source scenes |
-|---|---|---|
-| RX, K=15, corpus basis | 0.9835 | 0.9826 |
-| Autoencoder alone | 0.9619 | 0.9638 |
-| Fused, α = 0.5 | 0.9843 | 0.9836 |
+### The unit of analysis is the source scene
 
-### A2 — paired comparison on the 94 scenes
+HAD100 ships 100 crops from **94 AVIRIS-NG source scenes**; six scenes contribute
+two crops each. Two crops from one scene share background statistics, so treating
+all 100 as independent inflates the sample. The grouping is derived from the
+filenames (`source_scene()` in `revision_stats.py`), finds exactly six doubled
+scenes, and crops within a scene are averaged before any test.
 
-Wilcoxon signed-rank on the 94 paired AUCs; mean difference with a 95 % bootstrap
-CI over 10 000 resamples **of source scenes**, so the resampling unit matches the
-independence assumption.
+### The final table
 
-| comparison | mean diff | 95 % CI | win/tie/loss | W | *p* | significant |
+| branch | crop (100) | scene (94) | median (scene) | per-seed (scene, 0→4) |
+|---|---|---|---|---|
+| RX, K = 8 | 0.9844 | 0.9837 | — | deterministic |
+| Autoencoder alone | 0.9750 ± 0.0027 | 0.9745 ± 0.0023 | 0.9746 | 0.9755 0.9727 0.9746 0.9778 0.9719 |
+| Fused, α = 0.5 | 0.9860 ± 0.0011 | 0.9854 ± 0.0012 | 0.9853 | 0.9861 0.9850 0.9853 0.9868 0.9838 |
+| **Fused, CV α** | **0.9890 ± 0.0006** | **0.9885 ± 0.0007** | **0.9887** | 0.9887 0.9888 0.9882 0.9894 0.9876 |
+
+### Paired tests against RX, 94 scenes, per seed
+
+| branch | seed 0 | 1 | 2 | 3 | 4 | verdict |
 |---|---|---|---|---|---|---|
-| fused (α=0.5) − RX | **+0.00096** | [−0.00451, +0.00615] | 48 / 1 / 45 | 1895.0 | **0.266** | **no** |
-| autoencoder − RX | **−0.01882** | [−0.03100, −0.00832] | 24 / 0 / 70 | 1114.0 | **2.47 × 10⁻⁵** | yes, *worse* |
+| AE − RX | −0.0082 | −0.0110 | −0.0091 | −0.0059 | −0.0117 | |
+| *p* | 2.3e−4 | 6.2e−3 | 6.6e−3 | 0.039 | 5.5e−6 | **worse, 5/5** |
+| fused(0.5) − RX | +0.0024 | +0.0013 | +0.0016 | +0.0032 | +0.0001 | |
+| *p* | 0.017 | 8.5e−3 | 7.3e−3 | 8.5e−4 | **0.326** | better, 4/5 |
+| fused(CV α) − RX | +0.0050 | +0.0051 | +0.0045 | +0.0057 | +0.0040 | |
+| *p* | 1.7e−9 | 1.8e−8 | 2.7e−8 | 1.8e−9 | 4.3e−9 | **better, 5/5** |
 
-**The fusion gain at α = 0.5 is not statistically significant.** The CI spans
-zero, the sign is near-even across scenes (48 wins to 45 losses), and *p* = 0.27.
-Fusion at the a-priori weight is indistinguishable from RX alone on this
-benchmark. That is the result, and the paper must say so rather than quote
-+0.0008 as an improvement.
+Win/tie/loss at CV α: 75/1/18, 71/4/19, 73/4/17, 73/4/17, 73/2/19.
 
-The second row is the stronger finding and it runs against the method: the
-autoencoder is **significantly worse than RX**, losing on 70 of 94 scenes at
-*p* ≈ 2 × 10⁻⁵. §7 already called it "a weak second opinion"; this quantifies
-that the weakness is not noise.
+Three things follow.
 
-### B — α selected by grouped 5-fold cross-validation
+**The autoencoder alone is significantly worse than RX, on every seed.** It loses
+on 59–71 of 94 scenes. §7's description of it as "a weak second opinion" is
+quantified here: it is not a competitive detector and the paper must not imply
+it is.
 
-Five folds grouped by source scene, α chosen on four folds by grid search over
-0.0–1.0 in steps of 0.1, then evaluated on the held-out fold. No scene appears in
-both a selection fold and its held-out fold — asserted in code, not assumed.
+**Fusion at the a-priori α = 0.5 is the weak version of the claim.** It helps,
+but on seed 4 the gain is +0.0001 at *p* = 0.33 — indistinguishable from zero.
+A result that depends on the seed is not a result.
 
-| fold | train scenes | held-out scenes | α selected | held-out @ CV α | held-out @ α=0.5 | held-out RX |
-|---|---|---|---|---|---|---|
-| 0 | 75 | 19 | 0.9 | 0.9896 | 0.9892 | 0.9820 |
-| 1 | 75 | 19 | 0.8 | 0.9795 | 0.9708 | **0.9798** |
-| 2 | 75 | 19 | 0.8 | 0.9911 | 0.9869 | 0.9864 |
-| 3 | 75 | 19 | 0.9 | 0.9915 | 0.9879 | 0.9822 |
-| 4 | 75 | 19 | 0.8 | 0.9853 | 0.9830 | 0.9826 |
-| **mean ± std** | | | **0.8–0.9** | **0.9874 ± 0.0051** | **0.9836 ± 0.0075** | **0.9826 ± 0.0024** |
+**Fusion at a cross-validated α survives everything.** Five seeds, *p* < 5 × 10⁻⁹
+throughout, winning 73–78 of 94 scenes.
 
-**α selected per fold: [0.9, 0.8, 0.8, 0.9, 0.8].** The selection is stable —
-every fold lands at 0.8 or 0.9, never near 0.5 — which is the one piece of
-support the a-priori weight does *not* get: if 0.5 were right, folds would scatter
-around it. They do not.
+### α by grouped 5-fold cross-validation
 
-Three things to take from this table:
+Folds grouped by source scene; no scene appears in both a selection fold and its
+held-out fold, asserted in code. α searched over 0.0–1.0 in steps of 0.1.
 
-1. **0.9874 ± 0.0051 is the defensible cross-validated number.** It is below the
-   retired 0.9882 and carries a spread four times the gain over RX.
-2. **The gain over RX survives selection but not the spread.** 0.9874 against
-   0.9826 is +0.0048, against a held-out std of 0.0051. Consistent with A2: a
-   real but small effect that a 94-scene benchmark cannot resolve cleanly.
-3. **Fold 1 loses.** At the CV-selected α, held-out fusion (0.9795) is *below* RX
-   on that fold (0.9798). One fold in five where fusion does not help, after
-   honest selection, is the kind of detail the α sweep in §7 hid completely.
+| seed | α per fold | held-out mAUC | median |
+|---|---|---|---|
+| 0 | [0.9, 0.8, 0.8, 0.8, 0.8] | 0.9887 ± 0.0053 | 0.9904 |
+| 1 | [0.9, 0.8, 0.8, 0.8, 0.8] | 0.9888 ± 0.0045 | 0.9886 |
+| 2 | [0.9, 0.8, 0.8, 0.9, 0.8] | 0.9881 ± 0.0043 | 0.9870 |
+| 3 | [0.8, 0.8, 0.8, 0.8, 0.8] | 0.9894 ± 0.0048 | 0.9884 |
+| 4 | [0.9, 0.8, 0.9, 0.9, 0.9] | 0.9876 ± 0.0052 | 0.9896 |
+
+**Pooled over 5 seeds × 5 folds: 0.9885 ± 0.0045, median 0.9886, range
+[0.9799, 0.9947].** α pooled: **0.8 seventeen times, 0.9 eight times** — never
+0.5, never 1.0. The a-priori weight of 0.5 gets no support from the data: if it
+were right, folds would scatter around it.
+
+### The cross-dataset arm: α chosen on ABU, applied to HAD100
+
+Selecting α on one dataset and applying it to another is the strongest available
+form of "this weight is not fitted to the test images". ABU differs from HAD100
+in sensor, band count (102–207 against 276), scene content, anomaly type, *and*
+training regime — its autoencoders are trained per scene, self-supervised.
+
+ABU α curve (13 scenes × 5 seeds): 0.0 → 0.9267, 0.5 → 0.9534, 0.8 → 0.9635,
+**0.9 → 0.9655**, 1.0 → 0.9627. **α = 0.9 selected.**
+
+Applied unchanged to HAD100:
+
+| seed | HAD100 scene mAUC | diff vs RX | W/T/L | *p* |
+|---|---|---|---|---|
+| 0 | 0.9888 | +0.00513 | 77/3/14 | 5.0e−11 |
+| 1 | 0.9889 | +0.00520 | 78/5/11 | 2.1e−11 |
+| 2 | 0.9885 | +0.00486 | 77/4/13 | 2.1e−11 |
+| 3 | 0.9889 | +0.00524 | 77/7/10 | 1.6e−11 |
+| 4 | 0.9881 | +0.00445 | 76/2/16 | 5.9e−11 |
+
+**0.9887 ± 0.0003, median 0.9888, against RX 0.9837 — 5 of 5 seeds.** The
+transferred α does marginally *better* than the in-domain CV α (0.9885), which
+is the opposite of what tuning-to-the-test would produce.
+
+### But fusion loses on ABU
+
+The same fusion, applied to the 13 ABU scenes at α = 0.5:
+
+| | mean diff | 95% CI | W/T/L | W | *p* |
+|---|---|---|---|---|---|
+| AE − RX | −0.03600 | [−0.04979, −0.02220] | 1/0/12 | 1.0 | 4.9e−4 |
+| fused − RX | −0.00931 | [−0.01568, −0.00364] | 4/0/9 | 13.0 | **0.0215** |
+
+**Fusion is significantly worse than RX on ABU.** Per seed, *p* = 0.110, 0.017,
+0.068, 0.068, 0.013 — significant on 2 of 5, all in the same direction. With
+n = 13 the smallest attainable two-sided *p* is ≈ 2.4 × 10⁻⁴, so this test can
+reject but cannot resolve fine differences; that is a property of the sample
+size, not evidence of a near-miss.
+
+The honest summary is therefore split: **fusion helps on the benchmark it was
+developed against and hurts on the one it was not.** §7c has the per-scene
+table and the band-count mismatch that forced per-scene retraining there.
 
 ### What is retired
 
-The a-priori α = 0.5 row stays, because it is what the headline uses and
-pretending otherwise would be the same error in the other direction. What does
-not stay is any number selected on the images it is reported against — see the
-retirement note in §7.
+The a-priori α = 0.5 row stays, because it is what earlier drafts reported and
+removing it would be the same error in the other direction. What does not stay
+is any number selected on the images it is reported against — see §7's
+retirement note for the withdrawn 0.9882 at α = 0.90.
+
+---
+
+## 7b. The checkpoint bug: as-run numbers, the diagnosis, and the fix
+
+Until this revision `train_autoencoder` returned the weights from the **final**
+epoch. Nothing tracked or restored the best one. The training loss is not
+monotone, so this is a lottery, and across five seeds it was lost once.
+
+**As-run (final-epoch weights), band50, α = 0.5:**
+
+| seed | AE alone | fused |
+|---|---|---|
+| 0 | 0.9619 | 0.9843 |
+| 1 | 0.9398 | 0.9714 |
+| 2 | 0.9665 | 0.9819 |
+| 3 | 0.9292 | 0.9720 |
+| 4 | **0.8299** | 0.9445 |
+| mean ± std | 0.9255 ± 0.0556 | 0.9708 ± 0.0158 |
+| median | 0.9398 | 0.9720 |
+
+**The diagnosis.** `scripts/revision_seed4_diag.py` retrains seeds 0–4 recording
+the per-epoch loss:
+
+| seed | best loss | at epoch | final loss | final ÷ best |
+|---|---|---|---|---|
+| 0 | 0.006833 | 19 | 0.03015 | 4.4 |
+| 1 | 0.005170 | 19 | 0.009692 | 1.9 |
+| 2 | 0.005523 | 15 | 0.007972 | 1.4 |
+| 3 | 0.005765 | 19 | 0.01680 | 2.9 |
+| 4 | 0.006235 | 18 | **0.3813** | **61.2** |
+
+Seed 4's patch draw is sound (40,000 patches, finite, std 3.4129, matching its
+siblings) and its training was healthy to epoch 18, reaching a best loss *inside*
+the range of seeds 0–3. Then it spiked 61× on the last epoch, and the last epoch
+is what was saved and scored. **Every** seed ends above its own best, by 1.4× to
+4.4×; seed 4 is the draw whose wander landed on epoch 20.
+
+This is a harness gap, not a property of the architecture, and it is reported as
+**1 of 5 seeds** — five runs do not support a rate, and quoting one would invite
+a reader to multiply it.
+
+**The fix.** 10 % of the training patches are held out, seeded, and the weights
+returned are those of the epoch with the lowest held-out reconstruction loss.
+Nothing else changed: no learning rate, epoch count, or architecture change. The
+held-out patches are unlabelled anomaly-free background, so the selection is by
+reconstruction loss on background, never by detection accuracy on a test scene —
+there is nothing to leak. The same rule covers HAD100's corpus training and
+ABU's per-scene training, because the split is taken over whatever patches the
+caller passes. `tests/unit/test_autoencoder.py` asserts the returned weights
+re-score to the recorded best validation loss.
+
+**What the fix bought:**
+
+| band50, α = 0.5 | as-run | fixed |
+|---|---|---|
+| AE alone | 0.9255 ± 0.0556 | **0.9750 ± 0.0027** |
+| fused | 0.9708 ± 0.0158 | **0.9860 ± 0.0011** |
+| AE seed std | 0.0556 | 0.0027 (**20× tighter**) |
+
+The autoencoder was never as weak as the as-run numbers said; it was being saved
+at the wrong moment. Both sets are kept here because the as-run numbers are what
+earlier drafts reported, and a reader comparing versions is entitled to see why
+they moved.
+
+---
+
+## 7c. Generalisation to ABU: RX transfers, the autoencoder does not
+
+`python scripts/revision_abu.py`. 13 scenes, seeds 0–4, α = 0.5, K = 15
+per-scene PCA.
+
+**The band counts rule out transfer before any accuracy question is asked.**
+ABU's 13 scenes carry **seven distinct widths — 102, 188, 191, 193, 204, 205,
+207 — and none is HAD100's 276.** The HAD100-trained autoencoder cannot be
+applied to any of them: its first convolution is built for a fixed spectral
+depth. Each scene needed its own network, trained Auto-AD style on that scene,
+self-supervised and without labels. **RX needed no retraining at any width.**
+
+That is the practical cost R1 asked about, and it is structural rather than
+incidental: a detector whose first layer is shaped by the sensor must be
+retrained per sensor, and one estimating a covariance from the scene in front of
+it need not be.
+
+| scene | bands | RX | AE (mean ± std) | fused (mean ± std) |
+|---|---|---|---|---|
+| abu-airport-1 | 205 | 0.8910 | 0.8463 ± 0.0318 | 0.8742 ± 0.0227 |
+| abu-airport-2 | 205 | 0.9448 | 0.8850 ± 0.0335 | 0.9200 ± 0.0149 |
+| abu-airport-3 | 205 | 0.9384 | 0.8787 ± 0.0125 | 0.9043 ± 0.0120 |
+| abu-airport-4 | 191 | 0.9789 | 0.9207 ± 0.0317 | **0.9793 ± 0.0050** |
+| abu-beach-1 | 188 | 0.9799 | 0.9824 ± 0.0039 | **0.9848 ± 0.0033** |
+| abu-beach-2 | 193 | 0.9204 | 0.9012 ± 0.0050 | 0.9107 ± 0.0032 |
+| abu-beach-3 | 188 | 0.9981 | 0.9946 ± 0.0011 | **0.9992 ± 0.0004** |
+| abu-beach-4 | 102 | 0.9675 | 0.9597 ± 0.0221 | **0.9713 ± 0.0136** |
+| abu-urban-1 | 204 | 0.9926 | 0.9671 ± 0.0176 | 0.9893 ± 0.0038 |
+| abu-urban-2 | 207 | 0.9974 | 0.9660 ± 0.0071 | 0.9929 ± 0.0017 |
+| abu-urban-3 | 191 | 0.9721 | 0.8879 ± 0.0282 | 0.9565 ± 0.0034 |
+| abu-urban-4 | 205 | 0.9797 | 0.9633 ± 0.0221 | 0.9736 ± 0.0146 |
+| abu-urban-5 | 205 | 0.9547 | 0.8945 ± 0.0133 | 0.9382 ± 0.0072 |
+| **mean ± std** | | **0.9627 ± 0.0319** | **0.9267 ± 0.0475** | **0.9534 ± 0.0400** |
+
+Median within-scene seed std of the autoencoder: 0.0176.
+
+**Fusion is significantly worse than RX here** — mean −0.0093, 95 % CI
+[−0.0157, −0.0036], 4 wins to 9 losses, *p* = 0.0215. The autoencoder alone is
+worse still: −0.0360, 1 win to 12, *p* = 4.9 × 10⁻⁴. Fusion wins on only four
+scenes, all by small margins (beach-3 +0.0011, beach-1 +0.0049, beach-4 +0.0038,
+airport-4 +0.0004).
+
+Per seed, fused vs RX: *p* = 0.110, 0.017, 0.068, 0.068, 0.013 — significant on
+2 of 5, every one in the same direction. With n = 13 the smallest attainable
+two-sided *p* is ≈ 2.4 × 10⁻⁴.
+
+**The result that belongs in the paper is the contrast.** The same fusion that
+beats RX on HAD100 at *p* < 5 × 10⁻⁹ loses to it on ABU at *p* = 0.02. The gain
+is not a property of the method; it is a property of the method **on the
+benchmark it was developed against**. Anyone deploying this on a new sensor
+should expect the RX branch to carry the result and should re-measure before
+trusting the fusion.
 
 ---
 
@@ -599,6 +874,56 @@ false alarms are confined to unlabelled and field-boundary pixels. RX's
 unimodal-Gaussian background assumption survives a 16-class agricultural scene
 better than expected — provided the PCA width leaves it enough directions to
 model the background in.
+
+---
+
+## 8a. Computational cost
+
+`python scripts/revision_cost.py`. One machine, one process: RTX 3050 Laptop
+(4 GB), Python 3.12.4, PyTorch 2.5.1+cu121. **Medians over 27 images with the
+first 3 excluded as warm-up** — the first CUDA call in a process pays context
+creation and cuDNN autotuning, which would otherwise land in a per-image median.
+GPU timings are taken after an explicit `torch.cuda.synchronize()`, so they
+measure work completed rather than work enqueued.
+
+| stage | per image | device |
+|---|---|---|
+| preprocess + PCA transform | 10.3 ms | cpu |
+| **RX detector (Eq. 2)** | **2.0 ms** | cpu |
+| **autoencoder inference (Eq. 1)** | **1149.9 ms** | cuda |
+| fusion | 0.1 ms | cpu |
+| **total pipeline** | **1162.0 ms** | |
+
+Training: corpus 40,000 patches × 20 epochs = **217.7 s, peak 0.31 GB**.
+Per-scene, Auto-AD style as ABU requires, 10,000 patches = **54.5 / 54.6 /
+55.1 s, peak 0.33 GB** — paid once *per image* rather than once for the set.
+Inference peak VRAM 1.116 GB; host RSS 1.24 GB (Δ +0.06).
+
+**The ratio.** RX end-to-end is 12.3 ms per image; the full pipeline is 1162 ms.
+The autoencoder costs **~95× the RX path** and 218 s of training, for the +0.0048
+mAUC that §7a measures on HAD100 and the −0.0093 it costs on ABU.
+
+**Two fairness notes, because the ratio is only meaningful against a reasonable
+implementation.**
+
+*Batch size was measured, not assumed.* Inference was already batched; the sweep
+checks it is batched *well*:
+
+| batch | 256 | **1024** | 2048 | 4096 |
+|---|---|---|---|---|
+| ms | 1167.5 | **1148.9** | 2414.0 | 11809.5 |
+
+The intuitive choice — 4,096, a whole 64×64 crop in one call — is **10× slower**,
+because 4,096 patches of 15×7×7 through 32/64/128 channels peak at 4.35 GB on a
+4 GB card and spill. The library default of 1,024 is also the optimum, so the
+cost above is not an artefact of an unlucky setting. At that batch the time is
+**3.1 ms host patch extraction + 1131.7 ms network forward**: the cost is the
+forward pass itself, not data marshalling, and no amount of batching removes it.
+
+*The branches run on different devices.* RX is numpy and runs on the **CPU**; the
+autoencoder runs on the **GPU**. The comparison therefore already favours the
+autoencoder, and the measured gap is a **lower bound** on the gap. Putting RX on
+a GPU would widen it, not narrow it.
 
 ---
 
