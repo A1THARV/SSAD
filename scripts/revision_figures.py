@@ -198,25 +198,41 @@ def draw_fig3(data: dict, out_dir: Path) -> None:
     gap_lo, gap_hi = calm.max(), fire.min()
 
     fig, ax = plt.subplots(figsize=(COL_IN, 2.5))
-    bins = np.linspace(0, max(fire.max(), calm.max()) * 1.02, 46)
-    ax.hist(calm, bins=bins, color=OKABE["sky"], edgecolor="white",
+
+    # The gap is the entire claim of this figure, so no bar may be drawn inside
+    # it. A single evenly spaced bin array puts one bin across 108.25 and the
+    # coldest fire frame then paints part-way into the shaded band, contradicting
+    # the label on top of it. Two arrays of the SAME width instead -- the cool
+    # one ending exactly at gap_lo, the warm one starting exactly at gap_hi -- so
+    # the band is empty because nothing is in it, not because it was hidden.
+    hi = max(fire.max(), calm.max()) * 1.02
+    w = hi / 45
+    cool = np.arange(gap_lo, -w, -w)[::-1]
+    warm = np.arange(gap_hi, hi + w, w)
+    ax.hist(calm, bins=cool, color=OKABE["sky"], edgecolor="white",
             linewidth=0.3, label=f"no fire (n={calm.size})")
-    ax.hist(fire, bins=bins, color=OKABE["vermillion"], edgecolor="white",
+    ax.hist(fire, bins=warm, color=OKABE["vermillion"], edgecolor="white",
             linewidth=0.3, alpha=0.85, label=f"fire (n={fire.size})")
+    assert calm.max() <= gap_lo and fire.min() >= gap_hi, "frame inside the gap"
+
+    # Headroom so the annotations sit above the bars and clear of the legend.
+    ax.set_yscale("log")
+    ax.set_ylim(0.7, ax.get_ylim()[1] * 18)
+    top = ax.get_ylim()[1]
 
     ax.axvspan(gap_lo, gap_hi, color=OKABE["grey"], alpha=0.16, linewidth=0)
-    ax.annotate(f"{gap_hi - gap_lo:.1f} $\\degree$C gap\nno overlap",
-                xy=((gap_lo + gap_hi) / 2, ax.get_ylim()[1] * 0.62),
-                ha="center", va="center", fontsize=7, color="#222222")
-    for x, lab, ha in ((gap_lo, f"{gap_lo:.2f}", "right"), (gap_hi, f"{gap_hi:.2f}", "left")):
+    for x in (gap_lo, gap_hi):
         ax.axvline(x, color=OKABE["grey"], linewidth=0.7, linestyle=(0, (2, 2)))
-        ax.annotate(lab, xy=(x, ax.get_ylim()[1] * 0.97), xytext=(3 if ha == "left" else -3, 0),
-                    textcoords="offset points", ha=ha, va="top", fontsize=7,
-                    color="#222222")
+    ax.annotate(f"{gap_lo:.2f} – {gap_hi:.2f} $\\degree$C\n"
+                f"{gap_hi - gap_lo:.1f} $\\degree$C gap, no overlap",
+                xy=((gap_lo + gap_hi) / 2, top * 0.14), xytext=(0, 0),
+                textcoords="offset points", ha="center", va="center", fontsize=7,
+                color="#222222",
+                bbox=dict(boxstyle="round,pad=0.25", facecolor="white",
+                          edgecolor="none", alpha=0.85))
 
     ax.set_xlabel("per-frame maximum temperature ($\\degree$C)")
     ax.set_ylabel("frames")
-    ax.set_yscale("log")
     ax.legend(loc="upper right", borderaxespad=0.2)
     ax.spines[["top", "right"]].set_visible(False)
     save(fig, out_dir, "fig3_thermal_max_temperature")
