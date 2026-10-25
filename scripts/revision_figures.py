@@ -62,15 +62,32 @@ N_TRIALS = 250
 #: R3 asks for vector figures with every label legible at 3.5 in. 8 pt is the
 #: floor IEEE accepts, Type-42 keeps the text selectable and searchable rather
 #: than outlined, and savefig.bbox="tight" stops LaTeX having to crop whitespace.
+#:
+#: Serif throughout, to match IEEE body text. STIXGeneral is listed first
+#: because matplotlib ships it, so a fresh clone renders these identically on a
+#: machine with no Times installed; it is metrically designed against Times, and
+#: Times New Roman follows for anyone who has it. mathtext is set to the
+#: matching STIX set, or the degree signs in both figures would come back in the
+#: default sans face and the labels would be half serif, half not.
 RC_PARAMS = {
     "pdf.fonttype": 42, "ps.fonttype": 42,     # embed as TrueType, not Type-3
-    "font.family": "sans-serif",
-    "font.sans-serif": ["DejaVu Sans", "Arial", "Helvetica"],
+    "font.family": "serif",
+    "font.serif": ["STIXGeneral", "Times New Roman", "Times", "DejaVu Serif"],
+    "mathtext.fontset": "stix",
     "font.size": 8, "axes.labelsize": 8, "axes.titlesize": 9,
     "xtick.labelsize": 8, "ytick.labelsize": 8, "legend.fontsize": 8,
     "axes.linewidth": 0.6, "xtick.major.width": 0.6, "ytick.major.width": 0.6,
     "lines.linewidth": 1.3, "lines.markersize": 3.5,
-    "legend.frameon": False, "savefig.bbox": "tight", "savefig.pad_inches": 0.02,
+    "legend.frameon": False,
+    # NOT savefig.bbox="tight". Tight cropping trims the canvas to its content,
+    # so a figure declared at 3.5 in came out 3.14 in wide -- and
+    # \includegraphics[width=\columnwidth] then scales it back up by 1.11x,
+    # landing the "8 pt" text at 8.9 pt in the PDF. Constrained layout packs the
+    # content inside a canvas that stays exactly COL_IN wide, so inclusion at
+    # column width is 1:1 and 8 pt is 8 pt on the page.
+    "figure.constrained_layout.use": True,
+    "figure.constrained_layout.h_pad": 0.02,
+    "figure.constrained_layout.w_pad": 0.02,
 }
 
 
@@ -152,17 +169,21 @@ def draw_fig2(data: dict, out_dir: Path) -> None:
                 label=f"{label}, {n} bands")
 
     ax.axhline(data["chance"], color=OKABE["grey"], linewidth=0.8, linestyle=(0, (1, 2)))
+    # BELOW the chance line, not above it: at 8 pt this label is wide enough to
+    # run into the visible-band curve, which sits only ~0.04 above chance at the
+    # right-hand end. The strip under the line is empty by construction -- no
+    # series goes below chance -- so the margin set in set_ylim() keeps it clear.
     ax.annotate(f"chance (1/{data['n_species']})",
-                xy=(a.max(), data["chance"]), xytext=(-2, 3),
-                textcoords="offset points", ha="right", va="bottom",
-                fontsize=7, color=OKABE["grey"])
+                xy=(a.max(), data["chance"]), xytext=(0, -3),
+                textcoords="offset points", ha="right", va="top",
+                color=OKABE["grey"])
 
     ax.set_xlabel("target abundance in the pixel")
     ax.set_ylabel("top-1 species accuracy")
     ax.set_xscale("log")
     ax.set_xticks([0.05, 0.1, 0.2, 0.3, 0.5, 0.75, 1.0])
     ax.set_xticklabels(["0.05", "0.1", "0.2", "0.3", "0.5", "0.75", "1.0"])
-    ax.set_ylim(-0.02, 1.0)
+    ax.set_ylim(-0.11, 1.0)     # room under the chance line for its label
     ax.set_xlim(0.045, 1.12)
     ax.legend(loc="upper left", handlelength=2.4, borderaxespad=0.2)
     ax.spines[["top", "right"]].set_visible(False)
@@ -223,13 +244,18 @@ def draw_fig3(data: dict, out_dir: Path) -> None:
     ax.axvspan(gap_lo, gap_hi, color=OKABE["grey"], alpha=0.16, linewidth=0)
     for x in (gap_lo, gap_hi):
         ax.axvline(x, color=OKABE["grey"], linewidth=0.7, linestyle=(0, (2, 2)))
+    # The label sits OUTSIDE the band, to its right, with a leader back to it.
+    # Centred on the gap it is three times the band's width, so it ran across
+    # both dotted boundaries and off the left edge into the y-axis ticks. The
+    # strip to the right of gap_hi is empty up to the first fire bar near
+    # 180 degC, which leaves room at this height without covering any data.
     ax.annotate(f"{gap_lo:.2f} – {gap_hi:.2f} $\\degree$C\n"
                 f"{gap_hi - gap_lo:.1f} $\\degree$C gap, no overlap",
-                xy=((gap_lo + gap_hi) / 2, top * 0.14), xytext=(0, 0),
-                textcoords="offset points", ha="center", va="center", fontsize=7,
-                color="#222222",
-                bbox=dict(boxstyle="round,pad=0.25", facecolor="white",
-                          edgecolor="none", alpha=0.85))
+                xy=((gap_lo + gap_hi) / 2, top * 0.045),
+                xytext=(gap_hi + 0.08 * fire.max(), top * 0.16),
+                ha="left", va="center", color="#222222",
+                arrowprops=dict(arrowstyle="-", linewidth=0.6,
+                                color=OKABE["grey"], shrinkB=1.0))
 
     ax.set_xlabel("per-frame maximum temperature ($\\degree$C)")
     ax.set_ylabel("frames")
