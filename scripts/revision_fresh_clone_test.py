@@ -32,6 +32,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -40,21 +41,57 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 
-#: (label, argv, results file, keys to compare). Each is a command the README
-#: tells a reader to run, paired with the number it must produce.
+#: Producer steps: cheap enough to run inside the test, and they write the
+#: `results/` files the table steps below consume. `results/` is gitignored, so
+#: a fresh clone has none of it -- an earlier version of this harness ran only
+#: the consumers and reported three FileNotFoundErrors as though the repository
+#: were broken, when the real finding was that it had never stated the order.
+#:
+#: Anything needing a GPU or hours of training is NOT here. Those are skipped
+#: with a reason, and the numbers they would have produced are read from the
+#: committed `RESULTS.md` instead, which is what a reader checks against anyway.
+PRODUCERS = [
+    ("published baselines (README step 1)",
+     [sys.executable, "scripts/had100_baselines.py"],
+     "results/had100_baselines.json"),
+]
+
+#: (label, argv, results file, [(dotted key, expected, tolerance)]).
+#:
+#: Every table step must pin at least one HEADLINE number -- the value the paper
+#: prints -- not merely exit 0. A step that runs cleanly while writing a
+#: document with its numbers removed is the failure this list exists to catch.
 CHECKS = [
+    ("A2/B statistics, RX K=8",
+     [sys.executable, "scripts/revision_b_seeds.py", "--rx-k", "8"],
+     "results/revision/b_seeds.json",
+     [("rx_scene_mauc", 0.9837, 5e-4),
+      ("final_table.fused_cv_alpha.crop.mean", 0.9890, 5e-4),
+      ("final_table.rx.crop", 0.9844, 5e-4),
+      ("n_seeds_beating_rx_significantly", 5, 0)]),
     ("E benchmark table",
      [sys.executable, "scripts/revision_benchmark_table.py"],
      "results/revision/e_benchmark_table.json",
-     [("ours_rank", None), ("rows", "len")]),
+     [("ours_rank", 5, 0),
+      ("rows[is_ours].band50", 0.9890, 5e-4)]),
     ("F/H evidence tables",
      [sys.executable, "scripts/revision_tables.py"],
-     None, []),
-    ("A2/B statistics",
-     [sys.executable, "scripts/revision_stats.py"],
-     "results/revision/a2b_stats.json",
-     [("scene_level_mauc", None), ("b_alpha_cv.alpha_selected_per_fold", None),
-      ("a2_paired_tests", "len")]),
+     None,
+     [("thermal max-T AUC", 1.0000, 1e-4),
+      ("SAM full-range a=1.0", 0.904, 5e-4)]),
+]
+
+#: Steps that cannot run inside this harness, and why. Reported as SKIP with the
+#: reason, never as a pass and never as a FileNotFoundError.
+SKIPS = [
+    ("sec.1 headline pipeline run (README step 2)",
+     "needs a GPU and ~6 min per seed; writes results/m2-band50/maps/"),
+    ("sec.7b seed variance, seeds 0-4 (step 4)", "needs a GPU, ~1 h"),
+    ("sec.7c ABU cross-sensor (step 5)", "needs a GPU and the ABU set, ~2 h"),
+    ("sec.11/13 thermal (steps 6-7)",
+     "needs the FLAME 3 CV subset (7.5 GB) and the ECOSTRESS library"),
+    ("sec.8a cost (step 10)",
+     "a timing measurement; meaningless with anything else on the GPU"),
 ]
 
 
@@ -65,9 +102,61 @@ def run(cmd, cwd, env=None, timeout=3600):
 
 
 def dig(obj, dotted):
+    """Walk a dotted path, with `rows[is_ours]` selecting the flagged row."""
     for part in dotted.split("."):
-        obj = obj[part]
+        m = re.fullmatch(r"(\w+)\[(\w+)\]", part)
+        if m:
+            obj = next(r for r in obj[m.group(1)] if r.get(m.group(2)))
+        else:
+            obj = obj[part]
     return obj
+
+
+def md_number(text: str, pattern: str) -> float | None:
+    """Pull one number out of the generated markdown.
+
+    The F/H tables are a document, not a JSON file, so its headline values are
+    checked where a reader would actually read them. That also catches the
+    placeholder regression directly: a table whose numbers were dropped has
+    nothing here to match.
+    """
+    m = re.search(pattern, text)
+    return float(m.group(1)) if m else None
+
+
+#: Outputs of the GPU/dataset producers this harness skips. They are COPIED into
+#: the clone so the consuming steps have their inputs.
+#:
+#: Copied, never junctioned: the consumers write into `results/` too, and a
+#: junction would let the clone overwrite the repository's own results through
+#: it. 39 MB, which is cheap next to the hours of GPU time it stands in for.
+#:
+#: This is the honest boundary of the test. It verifies that the CONSUMING code
+#: reproduces the published numbers from these inputs -- not that the inputs
+#: themselves regenerate, which needs a GPU and the full datasets.
+PRECOMPUTED = [
+    "results/revision/maps",          # step 4, seed variance (GPU, ~1 h)
+    "results/thermal",                # steps 6-7, FLAME 3 + ECOSTRESS
+    "results/revision/g_fig2_data.json",   # step 9, SAM grid
+    "results/revision/d_cost.json",        # step 10, timings
+]
+
+
+def seed_precomputed(clone: Path, real: Path) -> tuple[int, list[str]]:
+    """Copy the skipped producers' outputs into the clone."""
+    copied, missing = 0, []
+    for rel in PRECOMPUTED:
+        src, dst = real / rel, clone / rel
+        if not src.exists():
+            missing.append(rel)
+            continue
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        if src.is_dir():
+            shutil.copytree(src, dst, dirs_exist_ok=True)
+        else:
+            shutil.copy2(src, dst)
+        copied += 1
+    return copied, missing
 
 
 def link_data(clone: Path, real: Path) -> str:
@@ -132,39 +221,78 @@ def main(argv=None) -> int:
     if not step(f"link data/ into the clone ({how})", how != "FAILED", how):
         return 1
 
+    # 4 -- seed the clone with what the skipped producers would have written.
+    n_copied, missing = seed_precomputed(clone, REPO)
+    step("copy precomputed producer outputs into the clone",
+         not missing,
+         f"copied {n_copied}/{len(PRECOMPUTED)}"
+         + (f"; MISSING {missing} -- run those producers first" if missing else ""))
+
+    # 5 -- producers the harness can afford to run itself.
+    for label, cmd, writes in PRODUCERS:
+        code, out = run(cmd, clone, env, timeout=3600)
+        ok = code == 0 and (clone / writes).is_file()
+        step(f"produce: {label}", ok,
+             f"wrote {writes}" if ok else (out.strip().splitlines()[-1] if out else ""))
+
+    # 6 -- steps that cannot run here. Named, with the reason.
+    for label, why in SKIPS:
+        report["steps"].append({"step": f"skip: {label}", "ok": True,
+                                "skipped": True, "detail": why})
+        print(f"  [SKIP] {label}  -- {why}")
+
+    # 7 -- table steps, each pinned to at least one headline number.
     for label, cmd, results_file, keys in CHECKS:
         code, out = run(cmd, clone, env, timeout=3600)
-        if not step(f"run: {label}", code == 0, out.strip().splitlines()[-1] if out else ""):
+        tail = out.strip().splitlines()[-1] if out.strip() else ""
+        if not step(f"run: {label}", code == 0, tail):
             continue
-        if not results_file:
-            continue
-        a = json.loads((clone / results_file).read_text(encoding="utf-8"))
-        b_path = REPO / results_file
-        if not b_path.is_file():
-            step(f"compare: {label}", False, "no committed baseline to compare against")
-            continue
-        b = json.loads(b_path.read_text(encoding="utf-8"))
+
         diffs = []
-        for key, mode in keys:
-            try:
-                va, vb = dig(a, key), dig(b, key)
-                if mode == "len":
-                    va, vb = len(va), len(vb)
-                if json.dumps(va, sort_keys=True) != json.dumps(vb, sort_keys=True):
-                    diffs.append(f"{key}: clone={va} vs repo={vb}")
-            except Exception as exc:
-                diffs.append(f"{key}: {exc}")
-        step(f"compare: {label}", not diffs,
-             "identical" if not diffs else "; ".join(diffs))
+        if results_file:
+            a = json.loads((clone / results_file).read_text(encoding="utf-8"))
+            for key, expected, tol in keys:
+                try:
+                    got = dig(a, key)
+                    bad = (abs(float(got) - float(expected)) > tol if tol
+                           else got != expected)
+                    diffs.append(f"{key}: got {got}, RESULTS.md says {expected}"
+                                 if bad else None)
+                except Exception as exc:
+                    diffs.append(f"{key}: {exc}")
+        else:
+            # The F/H tables are markdown; read the headline values back out.
+            md = (clone / "results/revision/f_h_tables.md").read_text(encoding="utf-8")
+            patterns = {
+                "thermal max-T AUC": r"maximum temperature \| ([0-9.]+)",
+                "SAM full-range a=1.0": r"top-1 species accuracy \| ([0-9.]+)",
+            }
+            for key, expected, tol in keys:
+                got = md_number(md, patterns[key])
+                if got is None:
+                    diffs.append(f"{key}: NOT PRESENT in f_h_tables.md "
+                                 "(table written without its numbers?)")
+                elif abs(got - expected) > tol:
+                    diffs.append(f"{key}: got {got}, RESULTS.md says {expected}")
+
+        diffs = [d for d in diffs if d]
+        checked = ", ".join(f"{k}={v}" for k, v, _ in keys)
+        step(f"numbers: {label}", not diffs,
+             f"match ({checked})" if not diffs else "; ".join(diffs))
 
     ok = all(s["ok"] for s in report["steps"])
     report["all_passed"] = ok
     report["note"] = (
-        "Datasets are linked rather than re-downloaded: they are not "
-        "redistributable and two of the five are account-gated, so an unattended "
-        "re-download cannot be part of an automated check. This verifies the CODE "
-        "reproduces the numbers given the data, and separately that "
-        "download_data.py tells a reader exactly what to fetch and where to put it.")
+        "Two stated limits. Datasets are LINKED rather than re-downloaded: they "
+        "are not redistributable and two of the five are account-gated, so an "
+        "unattended re-download cannot be part of an automated check. And the "
+        "outputs of the GPU/dataset producers listed in SKIPS are COPIED in "
+        "rather than regenerated. What this test therefore establishes is that "
+        "a fresh clone's CODE reproduces the published headline numbers from "
+        "those inputs, that the repository carries no data or credentials, that "
+        "the suite passes with and without data present, and that "
+        "download_data.py tells a reader exactly what to fetch and where to put "
+        "it. It does not establish that the GPU producers reproduce.")
     out_path = REPO / args.out
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(report, indent=2), encoding="utf-8")

@@ -301,24 +301,38 @@ verification on the next run and the pipeline behaves identically.
 Each command below regenerates one reported result, with the number it must
 produce. A mismatch is a bug, not a seed.
 
-| result | command | expected |
-|---|---|---|
-| §1 headline detection | `python -m pipeline.cli.run_hyperspectral --config configs/had100_band50.yaml` | RX 0.9844 (K=8), AE 0.9750±0.0027, fused CV α 0.9890±0.0006 |
-| §7 ablation table | `python scripts/run_ablations.py` | 6 variants × 2 configs |
-| §7a paired test + α by CV | `python scripts/revision_b_seeds.py --rx-k 8` | fused−RX p < 5e−9 on 5/5 seeds; α pooled 0.8×17, 0.9×8; held-out 0.9885 ± 0.0045 |
-| §2a RX variants + K by CV | `python scripts/revision_rx_validate.py` | K=8 unanimous; (d) vs (a) p = 0.399; (d) vs (b8) p = 0.0156 |
-| §7c ABU + cross-dataset α | `python scripts/revision_abu_stats.py` | fused−RX p = 0.0215 (worse); α=0.9 from ABU → HAD100 0.9887 ± 0.0003 |
-| §7b seed variance | `python scripts/revision_seed_variance.py --variants baseline` | seeds 0–4 × 2 configs, ~1 h GPU |
-| §7b checkpoint diagnosis | `python scripts/revision_seed4_diag.py` | seed 4 final loss 61× its own best at epoch 18 |
-| §7c cross-sensor (ABU) | `python scripts/revision_abu.py` | 13 scenes, 7 distinct band counts, ~2 h GPU |
-| §9 benchmark ranking | `python scripts/revision_benchmark_table.py` | 5th of 20 (per-seed [5,5,6,5,6]); 7 of 19 baselines deep-learning |
-| §11 thermal baseline | `python scripts/thermal_baseline.py` | max-pixel AUC 1.0000 over 738 frames |
-| §13 emissivity + Eq. 5 | `python scripts/thermal_retrieval.py` | within-class 4.4 K, across-class 656.3 K (149×) |
-| §14 identification | `python scripts/sam_mixing_experiment.py` | 15-material uniform-SNR grid |
-| §8a computational cost | `python scripts/revision_cost.py` | RX 2.0 ms vs AE 1149.9 ms per image; medians, 3 warm-ups excluded |
-| Fig. 2, Fig. 3, scatter | `python scripts/revision_figures.py` | `fig2_sam_accuracy.pdf`, `fig3_thermal_maxT.pdf` |
-| evidence tables F1–F3, H1 | `python scripts/revision_tables.py` | `results/revision/f_h_tables.md` |
-| **full reproduction check** | `python scripts/revision_fresh_clone_test.py` | clones, installs, tests, re-runs, diffs |
+**Run them in the order given.** Several consume what an earlier one writes, and
+`results/` is not in the repository — a fresh clone starts with none of it. The
+**needs** column says what each command requires beyond the repo itself:
+
+- **HAD100** — the benchmark crops and/or its shipped baseline matrices
+- **GPU** — trains or runs the autoencoder; works on CPU but far slower
+- **FLAME 3**, **ECOSTRESS** — the thermal and spectral-library sources
+- **→ *name*** — a *producer step*: run that row first
+
+| # | result | command | needs | expected |
+|---|---|---|---|---|
+| 1 | published baselines | `python scripts/had100_baselines.py` | HAD100 | writes `results/had100_baselines.json`; GRX band50 = 0.97986 |
+| 2 | §1 headline detection | `python -m pipeline.cli.run_hyperspectral --config configs/had100_band50.yaml` | HAD100, GPU | writes `results/m2-band50/maps/`; RX 0.9844 (K=8) |
+| 3 | §7 ablation table | `python scripts/run_ablations.py` | HAD100, GPU | 6 variants × 2 configs |
+| 4 | §7b seed variance | `python scripts/revision_seed_variance.py --variants baseline` | HAD100, GPU | seeds 0–4 × 2 configs, ~1 h; writes `results/revision/maps/` |
+| 5 | §7c cross-sensor (ABU) | `python scripts/revision_abu.py` | ABU, GPU | 13 scenes, 7 distinct band counts, ~2 h; writes `results/revision/abu_maps/` |
+| 6 | §11 thermal baseline | `python scripts/thermal_baseline.py` | FLAME 3 | max-pixel AUC 1.0000 over 738 frames |
+| 7 | §13 emissivity + Eq. 5 | `python scripts/thermal_retrieval.py` | FLAME 3, ECOSTRESS | within-class 4.4 K, across-class 656.3 K (149×) |
+| 8 | §14 identification | `python scripts/sam_mixing_experiment.py` | HAD100, ECOSTRESS | 15-material uniform-SNR grid |
+| 9 | Fig. 2, Fig. 3, scatter | `python scripts/revision_figures.py` | → 6, 8 | `fig2_sam_accuracy.pdf`, `fig3_thermal_maxT.pdf`; full-range a=1.0 = 0.904 |
+| 10 | §8a computational cost | `python scripts/revision_cost.py` | HAD100, GPU | RX 2.0 ms vs AE 1149.9 ms per image; medians, 3 warm-ups excluded |
+| 11 | §2a RX variants + K by CV | `python scripts/revision_rx_validate.py` | HAD100, → 1 | K=8 unanimous; (d) vs (a) p = 0.399; (d) vs (b8) p = 0.0156 |
+| 12 | §7a paired test + α by CV | `python scripts/revision_b_seeds.py --rx-k 8` | HAD100, → 4 | fused−RX p < 5e−9 on 5/5 seeds; α pooled 0.8×17, 0.9×8; held-out 0.9885 ± 0.0045 |
+| 13 | §7c ABU + cross-dataset α | `python scripts/revision_abu_stats.py` | ABU, → 5 | fused−RX p = 0.0215 (worse); α=0.9 from ABU → HAD100 0.9887 ± 0.0003 |
+| 14 | §7b checkpoint diagnosis | `python scripts/revision_seed4_diag.py` | HAD100, GPU | seed 4 final loss 61× its own best at epoch 18 |
+| 15 | §9 benchmark ranking | `python scripts/revision_benchmark_table.py` | → 1, 12 | 5th of 20 (per-seed [5,5,6,5,6]); 7 of 19 baselines deep-learning |
+| 16 | evidence tables F1–F3, H1 | `python scripts/revision_tables.py` | → 6, 7, 9, 10 | `results/revision/f_h_tables.md`; exits non-zero if any input is missing |
+| 17 | **full reproduction check** | `python scripts/revision_fresh_clone_test.py` | HAD100 | clones, tests, re-runs, diffs headline numbers |
+
+Rows 11–16 read what rows 1–10 write; running one of them first fails with the
+missing file and the script that produces it, rather than emitting a table with
+the numbers quietly removed.
 
 Fig. 1 is drawn in TikZ in the paper source and is deliberately not generated
 here. Fig. 4 was deleted at revision.

@@ -41,6 +41,7 @@ import argparse
 import hashlib
 import json
 import sys
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -244,9 +245,25 @@ def background_spectrum(
                 mean = np.mean(stack, axis=0)
                 if np.all(np.isfinite(mean)) and mean.min() > 0:
                     return mean * (target_mean / float(mean.mean())), True
+    # The fallback is rescaled by the SAME rule as the real-data path above.
+    # It previously returned a continuum centred near 0.25 and ignored
+    # target_mean entirely, so without the corpus the abundance axis silently
+    # stopped meaning the fraction of signal contributed by the target -- the
+    # exact units error this function's docstring exists to prevent, surviving
+    # in the one branch nobody with the data ever exercised.
     rng = np.random.default_rng(seed)
     synthetic = 0.25 + 0.05 * np.sin(sensor_nm / 400.0) + rng.normal(0, 0.002, sensor_nm.size)
-    return np.clip(synthetic, 1e-3, None), False
+    synthetic = np.clip(synthetic, 1e-3, None)
+    synthetic = synthetic * (target_mean / float(synthetic.mean()))
+    warnings.warn(
+        f"HAD100 corpus not found at {CORPUS} or {CORPUS_ALT}; mixing into a "
+        "SYNTHETIC background instead of a real AVIRIS-NG one. The abundance "
+        "axis is still correctly scaled, but the background's spectral shape "
+        "is invented, so results will not match the reported numbers. The "
+        "returned is_real flag is False -- do not report these as measured.",
+        RuntimeWarning, stacklevel=2,
+    )
+    return synthetic, False
 
 
 #: Relative SNR against wavelength for an AVIRIS-class imaging spectrometer,

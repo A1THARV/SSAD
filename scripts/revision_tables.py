@@ -31,14 +31,56 @@ R = Path("results")
 OUT = Path("results/revision")
 
 
+#: Which script writes each input this module reads. A missing input is a
+#: missing PRODUCER RUN, and saying so is the difference between a reader
+#: knowing what to do next and a reader filing a bug.
+PRODUCERS = {
+    "results/thermal/flame3_baseline.json": "scripts/thermal_baseline.py",
+    "results/thermal/flame3_retrieval.json": "scripts/thermal_retrieval.py",
+    "results/revision/g_fig2_data.json": "scripts/revision_figures.py",
+    "results/revision/d_cost.json": "scripts/revision_cost.py",
+}
+
+#: Collected by _load() rather than raised at the first miss, so one run names
+#: every missing input instead of making the reader rediscover them one at a
+#: time.
+_MISSING: list[tuple[str, str]] = []
+
+
+def echo(text: str) -> None:
+    """Print text that may contain non-cp1252 characters.
+
+    These tables carry epsilon, degree and en-dash. A bare print() of them
+    raises UnicodeEncodeError on a Windows console at the default code page --
+    and because that happens AFTER the file is written, it turns a successful
+    run into a non-zero exit with the output already on disk, which is the
+    worst of both.
+    """
+    sys.stdout.buffer.write(
+        (text + "\n").encode(sys.stdout.encoding or "utf-8", "replace"))
+
+
 def _load(path: Path):
-    return json.loads(path.read_text(encoding="utf-8")) if path.is_file() else None
+    """Read a result JSON, recording the miss rather than returning None.
+
+    This module used to emit a placeholder row -- "_(run scripts/foo.py)_" --
+    in place of any table whose input was absent, and still exit 0. A document
+    that reports success while silently dropping the numbers it exists to carry
+    is worse than one that fails: the fresh-clone harness counted exactly that
+    as a pass, and it took a diff against the committed copy to notice three of
+    the four tables had been hollowed out.
+    """
+    if path.is_file():
+        return json.loads(path.read_text(encoding="utf-8"))
+    key = path.as_posix()
+    _MISSING.append((key, PRODUCERS.get(key, "unknown -- see results/ layout")))
+    return None
 
 
 def table_thermal() -> str:
     d = _load(R / "thermal" / "flame3_baseline.json")
     if not d:
-        return "_(run scripts/thermal_baseline.py)_\n"
+        return "_(F1 omitted: input missing -- see the error above)_\n"
     order = ["max_T", "frac_over_100C", "p99.9_T", "mean_T"]
     label = {"max_T": "maximum temperature", "frac_over_100C": "fraction of pixels > 100 °C",
              "p99.9_T": "99.9th percentile temperature", "mean_T": "mean temperature"}
@@ -70,7 +112,7 @@ def table_thermal() -> str:
 def table_emissivity() -> str:
     d = _load(R / "thermal" / "flame3_retrieval.json")
     if not d or not d.get("frames"):
-        return "_(run scripts/thermal_retrieval.py)_\n"
+        return "_(F2 omitted: input missing -- see the error above)_\n"
     fr = d["frames"][0]
     mats = [k for k in fr if isinstance(fr[k], dict)]
     in_class = [m for m in mats if m not in ("brass", "unlisted material")]
@@ -126,7 +168,7 @@ def table_emissivity() -> str:
 def table_sam() -> str:
     d = _load(OUT / "g_fig2_data.json")
     if not d:
-        return "_(run scripts/revision_figures.py)_\n"
+        return "_(F3 omitted: input missing -- see the error above)_\n"
     a = d["abundances"]
     full = d["subsets"]["full"]["accuracy"]
     lines = [
@@ -238,6 +280,12 @@ def table_implementation() -> str:
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--out", default="results/revision/f_h_tables.md")
+    p.add_argument(
+        "--allow-partial", action="store_true",
+        help="write the tables that CAN be built and exit 0, marking the rest "
+             "as omitted. Intended for iterating on one table without the "
+             "other producers run; never for generating a document to report "
+             "from, because the result looks complete and is not.")
     args = p.parse_args(argv)
 
     parts = [
@@ -250,9 +298,39 @@ def main(argv=None) -> int:
     ]
     text = "\n".join(parts)
     out = Path(args.out)
+
+    if _MISSING and not args.allow_partial:
+        # Nothing is written. A stale complete file on disk is more useful to
+        # the next reader than a fresh hollowed-out one.
+        lines = [
+            "",
+            f"REFUSED: {len(_MISSING)} input(s) missing, so these tables would "
+            "be written with their numbers removed.",
+            "",
+        ]
+        for path, producer in _MISSING:
+            lines.append(f"  missing : {path}")
+            lines.append(f"  produced by: {producer}")
+            lines.append("")
+        lines += [
+            f"Run the producer(s) above, then re-run this script. {out} was NOT "
+            "written.",
+            "Pass --allow-partial to write what is available anyway; the result "
+            "is not a document to report from.",
+        ]
+        msg = "\n".join(lines)
+        sys.stdout.buffer.write(
+            (msg + "\n").encode(sys.stdout.encoding or "utf-8", "replace"))
+        return 1
+
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(text, encoding="utf-8")
-    print(text)
+    echo(text)
+    if _MISSING:
+        print(f"\nWARNING: wrote a PARTIAL document; {len(_MISSING)} table(s) "
+              "have their numbers omitted:")
+        for path, producer in _MISSING:
+            print(f"  {path}  ->  run {producer}")
     print(f"\nwritten to {out}")
     return 0
 
